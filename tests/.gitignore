@@ -1,0 +1,6 @@
+# Ignore test results and cache
+test_results/
+smoke_test_results/
+.pytest_cache/
+__pycache__/
+*.pyc

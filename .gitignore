@@ -1,0 +1,218 @@
+# ==========================================
+# PYTHON
+# ==========================================
+# Byte-compiled / optimized / DLL files
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+
+# C extensions
+*.so
+
+# ==========================================
+# DISTRIBUTION / PACKAGING
+# ==========================================
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+share/python-wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+pip-log.txt
+pip-delete-this-directory.txt
+
+# PyInstaller
+*.manifest
+*.spec
+
+# ==========================================
+# VIRTUAL ENVIRONMENTS
+# ==========================================
+env/
+venv/
+.venv/
+ENV/
+env.bak/
+venv.bak/
+.env
+.python-version
+
+# UV specific
+uv.lock
+
+# ==========================================
+# TESTING / COVERAGE
+# ==========================================
+htmlcov/
+.tox/
+.nox/
+.coverage
+.coverage.*
+.cache
+.pytest_cache/
+nosetests.xml
+coverage.xml
+*.cover
+*.py,cover
+.hypothesis/
+pytestdebug.log
+
+# ==========================================
+# JUPYTER NOTEBOOK
+# ==========================================
+.ipynb_checkpoints
+*.ipynb_checkpoints/
+profile_default/
+ipython_config.py
+
+# ==========================================
+# TYPE CHECKING / LINTING
+# ==========================================
+.mypy_cache/
+.dmypy.json
+dmypy.json
+.pytype/
+.pyre/
+.ruff_cache/
+
+# ==========================================
+# IDE / EDITOR
+# ==========================================
+# VSCode
+.vscode/
+*.code-workspace
+
+# PyCharm
+.idea/
+*.iml
+*.iws
+
+# Sublime Text
+*.sublime-project
+*.sublime-workspace
+
+# Vim
+*.swp
+*.swo
+*~
+.vim/
+
+# Emacs
+*~
+\#*\#
+/.emacs.desktop
+/.emacs.desktop.lock
+*.elc
+
+# ==========================================
+# OS SPECIFIC
+# ==========================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.AppleDouble
+.LSOverride
+.Spotlight-V100
+.Trashes
+.AppleDB
+.AppleDesktop
+Network Trash Folder
+Temporary Items
+.apdisk
+
+# Windows
+Thumbs.db
+Thumbs.db:encryptable
+ehthumbs.db
+ehthumbs_vista.db
+*.stackdump
+[Dd]esktop.ini
+$RECYCLE.BIN/
+*.cab
+*.msi
+*.msix
+*.msm
+*.msp
+*.lnk
+
+# Linux
+*~
+.fuse_hidden*
+.directory
+.Trash-*
+.nfs*
+
+# ==========================================
+# PROJECT SPECIFIC
+# ==========================================
+# Results and outputs
+results/
+example_results/
+test_results/
+integration_test_results/
+
+# Caches
+cache/
+.cache/
+*.cache
+
+# Logs
+logs/
+*.log
+*.log.*
+
+# Experiments
+experiments/
+experiment_*.json
+*_intermediate.json
+
+# Temporary files
+temp_*
+tmp_*
+simple_*
+*_test.py
+*_fixed.py
+*_backup.py
+*_old.py
+
+# Model checkpoints and weights (if any)
+checkpoints/
+*.pt
+*.pth
+*.ckpt
+*.safetensors
+
+# Data (if large datasets are stored)
+data/raw/
+data/processed/
+*.csv
+*.tsv
+*.parquet
+
+# Documentation builds
+docs/_build/
+docs/_static/
+docs/_templates/
+site/
+
+# ==========================================
+# ENVIRONMENT VARIABLES
+# ==========================================
+.env
+.env.*
+!.env.example
+.envrc
