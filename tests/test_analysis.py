@@ -45,3 +45,19 @@ def test_faithfulness_rewards_the_decisive_word():
     assert abs(result["explainer"]["comprehensiveness"] - 0.8) < 1e-9   # removing "great" always flips
     assert abs(result["explainer"]["sufficiency"]) < 1e-9               # keeping "great" alone suffices
     assert result["random"]["comprehensiveness"] < result["explainer"]["comprehensiveness"]
+
+
+def test_word_edit_fraction():
+    from analysis.strength import word_edit_fraction
+    assert word_edit_fraction("The Film is good", "the film is good") == 0.0
+    assert word_edit_fraction("the film is good", "the movie is good") == 0.25
+    assert word_edit_fraction("a b c d", "c d a b") == 1.0
+
+
+def test_stability_by_strength_bins_and_correlation():
+    from analysis.strength import stability_by_strength
+    rows = [{"edit_fraction": f, "jaccard_at_5": 1 - f, "spearman_correlation": 1 - f, "same_prediction": True}
+            for f in (0.0, 0.1, 0.2, 0.5)]
+    out = stability_by_strength(rows)
+    assert [b["n"] for b in out["bins"]] == [1, 1, 1, 1]
+    assert out["spearman_strength_vs_jaccard_at_5"] < -0.99

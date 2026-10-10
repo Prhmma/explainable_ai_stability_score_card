@@ -8,7 +8,8 @@ Writes results/analysis/<experiment>.json and .md with:
   1. reproduced results next to the paper's published tables,
   2. stability over all vs. prediction-invariant comparisons,
   3. agreement between explainers on the same inputs,
-  4. deletion-based faithfulness vs. a random baseline.
+  4. deletion-based faithfulness vs. a random baseline,
+  5. stability as a function of perturbation strength.
 """
 
 import argparse
@@ -20,6 +21,7 @@ from pathlib import Path
 from analysis.faithfulness import faithfulness, make_predict_proba
 from analysis.paper_tables import PAPER_RESULTS
 from analysis.stability import METRICS, cross_method_agreement, load_per_instance, stability_summary
+from analysis.strength import annotate_strength, make_embedder, stability_by_strength
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
 RUNNER_NAMES = {
@@ -53,6 +55,17 @@ def build_report(experiment_key: str, instance_dir: str, device: str = None, wit
         summary['paper'] = {m: {'mean': v[0], 'std': v[1]} for m, v in paper.items()} if paper else None
         report['combinations'][f'{explainer}/{test}'] = summary
     report['cross_method_agreement'] = cross_method_agreement(records)
+
+    embed = make_embedder('cpu')
+    report['strength'] = {}
+    for (explainer, test), rows in records.items():
+        if test == 'SeedVariation':
+            continue  # identical inputs; strength is zero by construction
+        annotated = annotate_strength(rows, embed)
+        report['strength'][f'{explainer}/{test}'] = {
+            'edit_fraction': stability_by_strength(annotated, 'edit_fraction'),
+            'semantic_distance': stability_by_strength(annotated, 'semantic_distance', (0.0, 0.02, 0.05, 0.1, 0.2, 2.0)),
+        }
 
     if with_faithfulness:
         from stability_framework.model_loader import EXPERIMENT_MODELS, ModelLoader
@@ -88,6 +101,13 @@ def to_markdown(report) -> str:
     lines += ["", "## 3. Agreement between explainers (unperturbed inputs)", "", "| Pair | J@5 | ρ |", "|---|---|---|"]
     for pair, s in report['cross_method_agreement'].items():
         lines.append(f"| {pair} | {_fmt(s['jaccard_at_5'])} | {_fmt(s['spearman_correlation'])} |")
+    lines += ["", "## 5. Stability vs. perturbation strength", "",
+              "Spearman correlation between strength and stability (negative: stronger perturbations, less stable).", "",
+              "| Explainer / stress test | edit vs J@5 | edit vs ρ | semantic vs J@5 | semantic vs ρ |", "|---|---|---|---|---|"]
+    for key, s in report.get('strength', {}).items():
+        e, sem = s['edit_fraction'], s['semantic_distance']
+        lines.append(f"| {key} | {e['spearman_strength_vs_jaccard_at_5']:.2f} | {e['spearman_strength_vs_spearman_correlation']:.2f} | "
+                     f"{sem['spearman_strength_vs_jaccard_at_5']:.2f} | {sem['spearman_strength_vs_spearman_correlation']:.2f} |")
     if 'faithfulness' in report:
         lines += ["", "## 4. Deletion-based faithfulness (AOPC over 10/20/50% of words)", "",
                   "Higher comprehensiveness and lower sufficiency are better; compare each with the random ranking.", "",
