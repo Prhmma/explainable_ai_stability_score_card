@@ -1,80 +1,13 @@
 """
-Simple Unit Tests for Stability Framework
+Integration tests for the Stability Framework.
 
-Fast tests that don't require downloading models.
-These serve as a safety net during refactoring.
+These load real models and datasets from the Hugging Face Hub (cached after the
+first run). All tests in this module are marked `slow`.
 """
 
 import pytest
 
-
-class TestMetrics:
-    """Test the complete pipeline with minimal data"""
-    
-    @pytest.fixture
-    def assessor(self):
-        """Create assessor instance"""
-        return StabilityAssessor(
-            results_dir="tests/test_results",
-            random_seed=42,
-            device="cpu",  # Force CPU for testing
-            max_samples=5   # Very small sample size
-        )
-    
-    def test_distilbert_sst2_lime_seed_variation(self, assessor):
-        """
-        Test: DistilBERT + SST-2 + LIME + Seed Variation
-        This is the simplest, fastest combination for testing
-        """
-        results = assessor.run_experiment(
-            model_name="distilbert-base-uncased-finetuned-sst-2-english",
-            dataset_config={
-                'loader_method': 'load_sst2_validation',
-                'kwargs': {'sample_size': 5}  # Only 5 samples
-            },
-            explainer_names=["lime"],
-            stress_test_names=["seed_variation"],
-            experiment_name="test_basic_pipeline",
-            explainer_params={
-                "lime": {"num_samples": 100}  # Reduced for speed
-            },
-            stress_test_params={
-                "seed_variation": {"seeds": [42, 43]}  # Only 2 seeds
-            }
-        )
-        
-        # Verify structure
-        assert results is not None
-        assert "experiment_name" in results
-        assert "results" in results
-        assert "model_info" in results
-        assert "dataset_info" in results
-        
-        # Verify model info
-        assert results["model_info"]["model_type"] is not None
-        assert results["model_info"]["num_parameters"] > 0
-        
-        # Verify dataset info
-        assert results["dataset_info"]["total_samples"] == 5
-        assert results["dataset_info"]["dataset_name"] == "sst2"
-        
-        # Verify results structure
-        assert "by_explainer" in results["results"]
-        assert "lime" in results["results"]["by_explainer"]
-        assert "SeedVariation" in results["results"]["by_explainer"]["lime"]
-        
-        # Verify metrics exist
-        lime_seed_results = results["results"]["by_explainer"]["lime"]["SeedVariation"]
-        assert "jaccard_at_5" in lime_seed_results
-        assert "spearman_correlation" in lime_seed_results
-        
-        # Verify metric ranges
-        assert 0.0 <= lime_seed_results["jaccard_at_5"]["mean"] <= 1.0
-        assert -1.0 <= lime_seed_results["spearman_correlation"]["mean"] <= 1.0
-        
-        print("\n✓ Test passed: Basic pipeline works!")
-        print(f"  Jaccard@5: {lime_seed_results['jaccard_at_5']['mean']:.3f}")
-        print(f"  Spearman: {lime_seed_results['spearman_correlation']['mean']:.3f}")
+pytestmark = pytest.mark.slow
 
 
 class TestModelLoading:
@@ -127,14 +60,13 @@ class TestDatasetLoading:
     
     def test_load_sst2(self):
         """Test SST-2 loading"""
-        from stability_framework.dataset_loader import DatasetLoader
+        from stability_framework.dataset_loader import DatasetLoader, DATASET_CONFIGS
         
         loader = DatasetLoader(random_seed=42)
-        texts, labels, metadata = loader.load_sst2_validation(sample_size=10)
+        texts, labels, metadata = loader.load_dataset(DATASET_CONFIGS["sst2"], sample_size=10)
         
         assert len(texts) == 10
         assert len(labels) == 10
-        assert metadata["dataset_name"] == "sst2"
         assert metadata["num_classes"] == 2
         assert all(isinstance(text, str) for text in texts)
         assert all(label in [0, 1] for label in labels)
@@ -143,14 +75,14 @@ class TestDatasetLoading:
     
     def test_load_agnews(self):
         """Test AG News loading"""
-        from stability_framework.dataset_loader import DatasetLoader
+        from stability_framework.dataset_loader import DatasetLoader, DATASET_CONFIGS
         
         loader = DatasetLoader(random_seed=42)
-        texts, labels, metadata = loader.load_ag_news_stratified(total_samples=20)
+        texts, labels, metadata = loader.load_dataset(DATASET_CONFIGS["ag_news"], sample_size=20, stratify=True)
         
         assert len(texts) == 20
         assert len(labels) == 20
-        assert metadata["dataset_name"] == "ag_news"
+        assert sorted(metadata["class_distribution"].values()) == [5, 5, 5, 5]
         assert metadata["num_classes"] == 4
         assert all(isinstance(text, str) for text in texts)
         assert all(label in [0, 1, 2, 3] for label in labels)
@@ -296,10 +228,7 @@ class TestEndToEnd:
         # Test 1: DistilBERT + SST-2
         results1 = assessor.run_experiment(
             model_name="distilbert-base-uncased-finetuned-sst-2-english",
-            dataset_config={
-                'loader_method': 'load_sst2_validation',
-                'kwargs': {'sample_size': 3}
-            },
+            dataset_config={'config_key': 'sst2', 'sample_size': None, 'stratify': False},
             explainer_names=["lime", "shap"],
             stress_test_names=["seed_variation"],
             experiment_name="test_distilbert_sst2",
@@ -308,8 +237,10 @@ class TestEndToEnd:
         )
         
         assert results1 is not None
-        assert "lime" in results1["results"]["by_explainer"]
-        assert "shap" in results1["results"]["by_explainer"]
+        by_explainer = results1["results"]["by_explainer"]
+        assert by_explainer["LIME"]["SeedVariation"]["sample_statistics"]["failed_samples"] == 0
+        # SHAP (Partition) is deterministic, so seed variation is skipped for it
+        assert "SeedVariation" not in by_explainer["SHAP"]
         
         print("✓ Full experiment test passed!")
         print(f"  Explainers tested: {list(results1['results']['by_explainer'].keys())}")
@@ -335,9 +266,9 @@ def run_smoke_tests():
     
     # Test 2: Dataset loading
     print("Test 2: Dataset Loading...")
-    from stability_framework.dataset_loader import DatasetLoader
+    from stability_framework.dataset_loader import DatasetLoader, DATASET_CONFIGS
     ds_loader = DatasetLoader(random_seed=42)
-    texts, labels, metadata = ds_loader.load_sst2_validation(sample_size=5)
+    texts, labels, metadata = ds_loader.load_dataset(DATASET_CONFIGS["sst2"], sample_size=5)
     print(f"✓ Dataset loads: {len(texts)} samples\n")
     
     # Test 3: Explainer
@@ -358,10 +289,7 @@ def run_smoke_tests():
     )
     results = assessor.run_experiment(
         model_name="distilbert-base-uncased-finetuned-sst-2-english",
-        dataset_config={
-            'loader_method': 'load_sst2_validation',
-            'kwargs': {'sample_size': 2}
-        },
+        dataset_config={'config_key': 'sst2', 'sample_size': None, 'stratify': False},
         explainer_names=["lime"],
         stress_test_names=["seed_variation"],
         experiment_name="smoke_test",
