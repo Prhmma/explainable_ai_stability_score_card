@@ -36,6 +36,10 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
+# Version of the paraphrase generator; part of the paraphrase cache key
+PARAPHRASE_GENERATOR_VERSION = 2
+
+
 class BaseStressTest(ABC):
     """Base class for stress tests."""
     
@@ -225,7 +229,9 @@ class SemanticParaphrasingTest(BaseStressTest):
         self.similarity_threshold = similarity_threshold
         
         # Set up caching
-        self.cache_dir = cache_dir or os.path.join(os.getcwd(), 'cache', 'paraphrases')
+        self.cache_dir = cache_dir or os.path.join(
+            os.path.expanduser('~'), '.cache', 'stability_framework', 'paraphrases'
+        )
         self.use_cache = True
         os.makedirs(self.cache_dir, exist_ok=True)
         
@@ -241,8 +247,9 @@ class SemanticParaphrasingTest(BaseStressTest):
         # Initialize NLTK wordnet if available
         if NLTK_AVAILABLE:
             try:
-                nltk.download('wordnet', quiet=True)
-                nltk.download('averaged_perceptron_tagger', quiet=True)
+                for resource in ('wordnet', 'averaged_perceptron_tagger',
+                                 'averaged_perceptron_tagger_eng', 'stopwords'):
+                    nltk.download(resource, quiet=True)
                 logger.info("NLTK wordnet initialized")
             except Exception as e:
                 logger.warning(f"Could not initialize NLTK: {e}")
@@ -255,7 +262,9 @@ class SemanticParaphrasingTest(BaseStressTest):
             'similarity_threshold': self.similarity_threshold,
             'random_seed': self.random_seed,
             'has_similarity_model': self.similarity_model is not None,
-            'nltk_available': NLTK_AVAILABLE
+            'nltk_available': NLTK_AVAILABLE,
+            # Bump when paraphrase generation changes so stale caches are not reused
+            'generator_version': PARAPHRASE_GENERATOR_VERSION
         }
         content_str = json.dumps(content, sort_keys=True)
         return hashlib.md5(content_str.encode()).hexdigest()
@@ -323,23 +332,25 @@ class SemanticParaphrasingTest(BaseStressTest):
         # Original text
         variants.append(text)
         
-        # Generate different types of paraphrases
-        variants.extend(self._generate_synonym_substitutions(text))
-        variants.extend(self._generate_reorderings(text))
-        variants.extend(self._generate_simple_transformations(text))
-        
-        # Filter variants by semantic similarity if model available
+        # Generate each category of paraphrase, filtered by semantic similarity
+        categories = [
+            self._generate_synonym_substitutions(text),
+            self._generate_reorderings(text),
+            self._generate_simple_transformations(text),
+        ]
         if self.similarity_model is not None:
-            variants = self._filter_by_similarity(text, variants)
-        
-        # Remove duplicates and limit
-        seen = set()
+            categories = [self._filter_by_similarity(text, c) if c else c for c in categories]
+
+        # Take variants round-robin across categories so that every category
+        # is represented, rather than the first category filling every slot
+        seen = {text}
         unique_variants = []
-        for variant in variants:
-            if variant not in seen and variant != text:
-                seen.add(variant)
-                unique_variants.append(variant)
-                
+        for rank in range(max((len(c) for c in categories), default=0)):
+            for category in categories:
+                if rank < len(category) and category[rank] not in seen:
+                    seen.add(category[rank])
+                    unique_variants.append(category[rank])
+
         final_paraphrases = [text] + unique_variants[:4]  # Original + up to 4 variants
         
         # Save to cache
@@ -348,93 +359,116 @@ class SemanticParaphrasingTest(BaseStressTest):
         return final_paraphrases
     
     def _generate_synonym_substitutions(self, text: str) -> List[str]:
-        """Generate variants using synonym substitution."""
+        """
+        Replace one content word at a time with a WordNet synonym of the same part of speech.
+
+        Only nouns, verbs, adjectives and adverbs in their base form are
+        substituted, never stopwords or auxiliaries (WordNet would otherwise
+        map "a" to "ampere" or "is" to "exist"), and inflected words are left
+        alone because WordNet synonyms are uninflected ("puts" -> "put").
+        Capitalized synonyms (acronyms, proper nouns) are skipped. Synonyms
+        keep WordNet's frequency order, so the output is deterministic. The
+        rest of the text, including whitespace, is left unchanged.
+        """
         variants = []
-        
         if not NLTK_AVAILABLE:
             return variants
-        
+
         try:
             import nltk
-            from nltk.corpus import wordnet
-            
-            words = text.split()
-            if len(words) < 2:
+
+            spans = [m.span() for m in re.finditer(r"\S+", text)]
+            if len(spans) < 2:
                 return variants
-            
-            # Try substituting each word
-            for i, word in enumerate(words):
-                # Get synonyms for the word
-                synonyms = self._get_synonyms(word.lower())
-                
-                if synonyms:
-                    # Create variants with synonym substitution
-                    for synonym in synonyms[:2]:  # Limit to 2 synonyms per word
-                        new_words = words.copy()
-                        # Preserve original case
-                        if word.isupper():
-                            new_words[i] = synonym.upper()
-                        elif word.istitle():
-                            new_words[i] = synonym.capitalize()
-                        else:
-                            new_words[i] = synonym
-                        variants.append(" ".join(new_words))
-            
+
+            words = [text[a:b] for a, b in spans]
+            cores = [w.strip(string.punctuation) for w in words]
+            tags = nltk.pos_tag([c or w for c, w in zip(cores, words)])
+            stop = self._stopwords()
+
+            for (a, b), word, core, (_, tag) in zip(spans, words, cores, tags):
+                pos = self._wordnet_pos(tag)
+                if pos is None or not core.isalpha() or core.lower() in stop:
+                    continue
+                if wordnet.morphy(core.lower(), pos) != core.lower():
+                    continue  # inflected form
+                for synonym in self._get_synonyms(core.lower(), pos)[:2]:  # Limit to 2 synonyms per word
+                    if core.isupper():
+                        synonym = synonym.upper()
+                    elif core.istitle():
+                        synonym = synonym.capitalize()
+                    variants.append(text[:a] + word.replace(core, synonym, 1) + text[b:])
+
         except Exception as e:
             logger.warning(f"Error in synonym substitution: {e}")
-            
+
         return variants
-    
-    def _get_synonyms(self, word: str) -> List[str]:
-        """Get synonyms for a word using WordNet."""
-        synonyms = set()
-        
+
+    @staticmethod
+    def _wordnet_pos(treebank_tag: str) -> Optional[str]:
+        """Map a Penn Treebank tag to a WordNet POS (content words only)."""
+        if treebank_tag.startswith('NN'):
+            return wordnet.NOUN
+        if treebank_tag.startswith('VB'):
+            return wordnet.VERB
+        if treebank_tag.startswith('JJ'):
+            return wordnet.ADJ
+        if treebank_tag.startswith('RB'):
+            return wordnet.ADV
+        return None
+
+    @staticmethod
+    def _stopwords() -> set:
         try:
-            import nltk
-            from nltk.corpus import wordnet
-            
-            for synset in wordnet.synsets(word):
+            from nltk.corpus import stopwords
+            return set(stopwords.words('english'))
+        except Exception:
+            return {"a", "an", "the", "is", "are", "was", "were", "be", "been", "being", "am",
+                    "have", "has", "had", "do", "does", "did", "not", "no", "it", "its", "s", "t"}
+
+    def _get_synonyms(self, word: str, pos: Optional[str] = None) -> List[str]:
+        """Single-word WordNet synonyms of `word` (optionally of one POS), in WordNet order."""
+        synonyms: Dict[str, None] = {}
+        try:
+            for synset in wordnet.synsets(word, pos=pos):
                 for lemma in synset.lemmas():
                     synonym = lemma.name().replace('_', ' ')
-                    if synonym.lower() != word.lower() and len(synonym.split()) == 1:
-                        synonyms.add(synonym)
-                        
+                    if synonym.lower() != word.lower() and synonym.isalpha() and synonym.islower():
+                        synonyms.setdefault(synonym, None)
         except Exception as e:
             logger.debug(f"Error getting synonyms for '{word}': {e}")
-            
+
         return list(synonyms)[:3]  # Return up to 3 synonyms
-    
+
     def _generate_reorderings(self, text: str) -> List[str]:
-        """Generate variants with minor word reordering."""
+        """
+        Swap two clauses joined by a comma or "and" ("A , B" -> "B , A").
+
+        Clauses starting with a subordinating or contrastive word ("but",
+        "because", ...) are not moved, since swapping them changes meaning.
+        Word-level shuffles, which break grammaticality, are not generated.
+        """
         variants = []
-        words = text.split()
-        
-        if len(words) < 3:
-            return variants
-        
-        # Simple reorderings for short sentences
-        if len(words) <= 6:
-            # Move first word to end
-            if len(words) >= 3:
-                reordered = words[1:] + [words[0]]
-                variants.append(" ".join(reordered))
-                
-            # Move last word to beginning
-            if len(words) >= 3:
-                reordered = [words[-1]] + words[:-1]
-                variants.append(" ".join(reordered))
-                
-        # For longer sentences, try swapping adjacent words
-        elif len(words) > 6:
-            # Swap middle words
-            mid = len(words) // 2
-            if mid > 0 and mid < len(words) - 1:
-                swapped = words.copy()
-                swapped[mid], swapped[mid + 1] = swapped[mid + 1], swapped[mid]
-                variants.append(" ".join(swapped))
-        
+        body = text.rstrip()
+        tail_space = text[len(body):]
+        trailing = ""
+        match = re.search(r"\s*[.!?]+$", body)
+        if match:
+            trailing = body[match.start():].strip()
+            body = body[:match.start()]
+
+        for joiner in (" , ", ", ", " and "):
+            parts = body.split(joiner)
+            if len(parts) == 2 and all(len(p.split()) >= 2 for p in parts):
+                first, second = parts[0].strip(), parts[1].strip()
+                if second.split()[0].lower() in {"but", "yet", "so", "because", "although", "though", "while"}:
+                    continue
+                swapped = f"{second}{joiner}{first}"
+                variants.append((f"{swapped} {trailing}" if trailing else swapped) + tail_space)
+                break
+
         return variants
-    
+
     def _generate_simple_transformations(self, text: str) -> List[str]:
         """Generate simple transformations that preserve meaning."""
         variants = []
