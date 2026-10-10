@@ -82,7 +82,7 @@ This stability card evaluates the consistency of explanation methods for the spe
         ('spearman_correlation', 'ρ'),
         ('attr_diff_relative_difference_percentage', 'AD (%)'),
     ]
-    STRESS_TEST_ORDER = ['SeedVariation', 'PreprocessingVariation', 'SemanticParaphrasing']
+    STRESS_TEST_ORDER = ['SeedVariation', 'PreprocessingVariation', 'SemanticParaphrasing', 'SemanticParaphrasingV1']
 
     def _format_mean_std(self, metrics_data: Dict[str, Any], key: str) -> str:
         stats = metrics_data.get(key)
@@ -312,7 +312,8 @@ Mohammadalizadeh, P., Mohammadalizadeh, P., and Mahmoudian, A. "A Framework for 
         mapping = {
             'SeedVariation': 'Seed Variation',
             'PreprocessingVariation': 'Preprocessing',
-            'SemanticParaphrasing': 'Paraphrasing'
+            'SemanticParaphrasing': 'Paraphrasing',
+            'SemanticParaphrasingV1': 'Paraphrasing (v1, as released with the paper)'
         }
         return mapping.get(name, name)
     

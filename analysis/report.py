@@ -31,7 +31,7 @@ RUNNER_NAMES = {
     'experiment_4': 'experiment_4_distilbert_agnews',
 }
 LABELS = {'jaccard_at_5': 'J@5', 'spearman_correlation': 'ρ', 'attr_diff_relative_difference_percentage': 'AD (%)'}
-TEST_ORDER = ['SeedVariation', 'PreprocessingVariation', 'SemanticParaphrasing']
+TEST_ORDER = ['SeedVariation', 'PreprocessingVariation', 'SemanticParaphrasing', 'SemanticParaphrasingV1']
 
 
 def latest_instance_dir(experiment_key: str) -> str:

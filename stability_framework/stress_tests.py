@@ -544,6 +544,9 @@ def create_stress_test(test_name: str, random_seed: int = 42, **kwargs) -> BaseS
         return PreprocessingVariationTest(random_seed=random_seed, **kwargs)
     elif test_name in ['paraphrasing', 'semantic_paraphrasing', 'semanticparaphrasing']:
         return SemanticParaphrasingTest(random_seed=random_seed, **kwargs)
+    elif test_name in ['semantic_paraphrasing_v1', 'semanticparaphrasingv1']:
+        from .legacy_paraphrase import LegacyParaphrasingTest
+        return LegacyParaphrasingTest(random_seed=random_seed, **kwargs)
     else:
         raise ValueError(f"Unknown stress test: {test_name}")
 
@@ -564,6 +567,11 @@ AVAILABLE_STRESS_TESTS = {
         'class': SemanticParaphrasingTest,
         'available': SENTENCE_TRANSFORMERS_AVAILABLE or NLTK_AVAILABLE,
         'description': 'Tests stability with meaning-preserving text variations',
+        'parameters': {'similarity_threshold': 0.8}
+    },
+    'semantic_paraphrasing_v1': {
+        'available': SENTENCE_TRANSFORMERS_AVAILABLE or NLTK_AVAILABLE,
+        'description': 'The paraphrase generator released with the paper, for comparison studies only',
         'parameters': {'similarity_threshold': 0.8}
     }
 }

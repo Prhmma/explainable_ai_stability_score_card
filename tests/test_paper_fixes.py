@@ -282,3 +282,14 @@ class TestUndefinedMetrics:
         from stability_framework.metrics import StabilityMetrics
         result = StabilityMetrics().attribution_difference({"a": 1.0}, {"b": 1.0})
         assert math.isnan(result["relative_difference_percentage"]) and result["common_tokens"] == 0
+
+
+class TestLegacyParaphrasing:
+
+    def test_legacy_generator_selectable_and_named(self, tmp_path):
+        from stability_framework.stress_tests import create_stress_test
+        test = create_stress_test("semantic_paraphrasing_v1", cache_dir=str(tmp_path))
+        assert test.name == "SemanticParaphrasingV1"
+        assert test._get_cache_key("x").startswith("v1_")
+        out = test.apply("a charming film about good people . ")
+        assert out[0] == "a charming film about good people . " and len(out) <= 5
