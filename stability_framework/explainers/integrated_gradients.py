@@ -45,8 +45,10 @@ class IntegratedGradientsExplainer(BaseExplainer):
             return_tensors='pt', 
             truncation=True, 
             padding=True,
-            max_length=512
+            max_length=512,
+            return_offsets_mapping=True
         )
+        offsets = [tuple(o) for o in inputs.pop('offset_mapping')[0].tolist()]
         inputs = {k: v.to(model.device) for k, v in inputs.items()}
         
         # Get prediction
@@ -89,10 +91,9 @@ class IntegratedGradientsExplainer(BaseExplainer):
         tokens = tokenizer.convert_ids_to_tokens(input_ids)
         
         # Aggregate to word level
-        word_attributions = self._aggregate_subword_attributions(
-            attr_scores, tokens, input_ids, tokenizer
-        )
-        
+        words = self._aggregate_to_words(text, offsets, attr_scores.tolist())
+        word_attributions = self._key_attributions(words)
+
         return {
             'method': self.name,
             'text': text,
@@ -100,7 +101,8 @@ class IntegratedGradientsExplainer(BaseExplainer):
             'target_class': target,
             'confidence': confidence,
             'attributions': word_attributions,
-            'token_attributions': dict(zip(tokens, attr_scores.tolist())),
+            'words': words,
+            'token_attributions': list(zip(tokens, attr_scores.tolist())),
             'convergence_delta': float(convergence_delta.abs().max().item()),
             'parameters': {'n_steps': self.n_steps, 'baseline': 'zero_embedding', 'random_seed': self.random_seed}
         }

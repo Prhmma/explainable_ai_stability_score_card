@@ -33,12 +33,21 @@ class SHAPExplainer(BaseExplainer):
         
         # Extract attributions for target class
         attributions = shap_values.values[0, :, target] if len(shap_values.values.shape) > 2 else shap_values.values[0, :]
-        tokens = shap_values.data[0] if hasattr(shap_values, 'data') else text.split()
-        word_attributions = dict(zip(tokens, attributions.tolist()))
+        # The Text masker's tokens concatenate back to the input text, so their
+        # character spans follow from cumulative lengths.
+        tokens = [str(t) for t in shap_values.data[0]]
+        if "".join(tokens) != text:
+            raise ValueError("SHAP tokens do not reconstruct the input text; cannot align to words")
+        offsets, pos = [], 0
+        for token in tokens:
+            offsets.append((pos, pos + len(token)))
+            pos += len(token)
+        words = self._aggregate_to_words(text, offsets, attributions.tolist())
+        word_attributions = self._key_attributions(words)
         
         return {
             'method': self.name, 'text': text,
             'predicted_class': predicted_class, 'target_class': target,
-            'confidence': confidence, 'attributions': word_attributions,
+            'confidence': confidence, 'attributions': word_attributions, 'words': words,
             'parameters': {'random_seed': self.random_seed}
         }

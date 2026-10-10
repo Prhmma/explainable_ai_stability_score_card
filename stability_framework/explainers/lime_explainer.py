@@ -2,8 +2,9 @@
 LIME Explainer - Local Interpretable Model-agnostic Explanations
 """
 
-from typing import Any, Dict, Optional
 import logging
+import re
+from typing import Any, Dict, Optional
 
 from .base import BaseExplainer
 from .config import LIME_AVAILABLE
@@ -29,16 +30,25 @@ class LIMEExplainer(BaseExplainer):
         target = target_class if target_class is not None else predicted_class
         
         predict_fn = self._create_prediction_function(model, tokenizer)
+        # LIME's default bag-of-words features are the \w+ runs of the text;
+        # request all of them so no word is silently assigned zero.
+        lime_words = re.findall(r"\w+", text)
         explanation = self.explainer.explain_instance(
-            text, predict_fn, num_features=len(text.split()), 
+            text, predict_fn, num_features=max(1, len(set(lime_words))),
             num_samples=self.params['num_samples'], labels=[target]
         )
-        
-        word_attributions = {word: score for word, score in explanation.as_list(label=target)}
+        weights = dict(explanation.as_list(label=target))
+
+        # Map LIME's word weights back onto every occurrence of each word,
+        # then onto the shared whitespace-word segmentation.
+        offsets = [m.span() for m in re.finditer(r"\w+", text)]
+        scores = [weights.get(m.group(), 0.0) for m in re.finditer(r"\w+", text)]
+        words = self._aggregate_to_words(text, offsets, scores)
+        word_attributions = self._key_attributions(words)
         
         return {
             'method': self.name, 'text': text,
             'predicted_class': predicted_class, 'target_class': target,
-            'confidence': confidence, 'attributions': word_attributions,
+            'confidence': confidence, 'attributions': word_attributions, 'words': words,
             'parameters': {'num_samples': self.params['num_samples'], 'random_seed': self.random_seed}
         }

@@ -2,6 +2,10 @@
 Base Explainer Class - Shared functionality for all explainers
 """
 
+import bisect
+import re
+import string
+
 import torch
 import numpy as np
 from typing import List, Dict, Any, Tuple, Optional
@@ -79,54 +83,66 @@ class BaseExplainer(ABC):
         predicted_class, confidence = self._get_prediction(model, inputs)
         return inputs, predicted_class, confidence
     
-    def _aggregate_subword_attributions(
-        self, 
-        attributions: np.ndarray, 
-        tokens: List[str],
-        input_ids: List[int],
-        tokenizer: Any
-    ) -> Dict[str, float]:
+    @staticmethod
+    def _aggregate_to_words(
+        text: str,
+        offsets: List[Tuple[int, int]],
+        scores: List[float]
+    ) -> List[Tuple[str, float]]:
         """
-        Aggregate subword-level attributions to word-level.
-        
-        Args:
-            attributions: Subword-level attribution scores
-            tokens: List of subword tokens
-            input_ids: List of token IDs
-            tokenizer: Tokenizer used
-            
+        Aggregate token-level scores to the whitespace-delimited words of `text`.
+
+        Every explainer uses this same segmentation, so explanations from
+        different tokenizers (WordPiece, BPE, SentencePiece) and methods are
+        comparable. Each token is assigned to the word containing the start of
+        its character span; a token that starts on whitespace (e.g. a
+        SentencePiece word-start marker) belongs to the following word.
+        Zero-width tokens (special tokens) are skipped.
+
         Returns:
-            Dictionary mapping words to aggregated attribution scores
+            Ordered list of (word, summed score), one entry per word occurrence.
         """
-        word_attributions = {}
-        current_word = ""
-        current_attribution = 0.0
-        
-        for i, (token, attr) in enumerate(zip(tokens, attributions)):
-            # Skip special tokens
-            if token in tokenizer.special_tokens_map.values():
+        spans = [(m.start(), m.end()) for m in re.finditer(r"\S+", text)]
+        if not spans:
+            return []
+        starts = [a for a, _ in spans]
+        totals = [0.0] * len(spans)
+        covered = [False] * len(spans)
+
+        for (a, b), score in zip(offsets, scores):
+            if b <= a:
                 continue
-                
-            # Handle different tokenizer conventions
-            if token.startswith('##') or token.startswith('▁'):  # BERT/ALBERT style
-                # Continuation of previous word
-                current_word += token[2:] if token.startswith('##') else token[1:]
-                current_attribution += attr
-            elif token.startswith('Ġ'):  # GPT/RoBERTa style
-                # New word
-                if current_word:
-                    word_attributions[current_word] = current_attribution
-                current_word = token[1:]
-                current_attribution = attr
-            else:
-                # New word or single character
-                if current_word:
-                    word_attributions[current_word] = current_attribution
-                current_word = token
-                current_attribution = attr
-        
-        # Add the last word
-        if current_word:
-            word_attributions[current_word] = current_attribution
-            
-        return word_attributions
+            idx = bisect.bisect_right(starts, a) - 1
+            if idx < 0 or a >= spans[idx][1]:
+                idx += 1
+            if idx >= len(spans):
+                continue
+            totals[idx] += float(score)
+            covered[idx] = True
+
+        return [(text[a:b], totals[i]) for i, (a, b) in enumerate(spans) if covered[i]]
+
+    @staticmethod
+    def _normalize_word(word: str) -> str:
+        """Case- and edge-punctuation-insensitive identity of a word ("Film," -> "film")."""
+        lowered = word.lower()
+        return lowered.strip(string.punctuation) or lowered
+
+    @classmethod
+    def _key_attributions(cls, word_scores: List[Tuple[str, float]]) -> Dict[str, float]:
+        """
+        Key word scores by normalized word, keeping repeated words distinct.
+
+        The n-th occurrence of a word is keyed "word#n" (the first is just
+        "word"), so repeated words no longer overwrite each other and the same
+        word occurrence matches across preprocessing variants (e.g. "Film" in
+        the original and "FILM" in an uppercased variant).
+        """
+        counts: Dict[str, int] = {}
+        keyed: Dict[str, float] = {}
+        for word, score in word_scores:
+            norm = cls._normalize_word(word)
+            counts[norm] = counts.get(norm, 0) + 1
+            key = norm if counts[norm] == 1 else f"{norm}#{counts[norm]}"
+            keyed[key] = float(score)
+        return keyed
