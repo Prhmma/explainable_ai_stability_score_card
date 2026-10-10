@@ -1,0 +1,47 @@
+"""Tests for the post-hoc analysis package (no models needed)."""
+
+import numpy as np
+
+from analysis.faithfulness import faithfulness, word_scores_for_text
+from analysis.paper_tables import PAPER_RESULTS
+from analysis.stability import stability_summary
+
+
+def test_paper_tables_complete():
+    assert len(PAPER_RESULTS) == 28
+    assert PAPER_RESULTS[("experiment_1", "IntegratedGradients", "PreprocessingVariation")]["jaccard_at_5"] == (0.471, 0.217)
+    assert PAPER_RESULTS[("experiment_4", "SHAP", "SemanticParaphrasing")]["attr_diff_relative_difference_percentage"] == (0.316, 0.390)
+
+
+def test_word_scores_align_when_explainer_skips_words():
+    # LIME has no feature for the punctuation-only word ","
+    scores = word_scores_for_text("good , not bad", [["good", 1.0], ["not", -0.5], ["bad", 0.2]])
+    assert scores.tolist() == [1.0, 0.0, -0.5, 0.2]
+
+
+def _comparison(j, same):
+    return {"jaccard_at_5": j, "spearman_correlation": j, "attr_diff_relative_difference_percentage": 1 - j,
+            "comparison_info": {"same_prediction": same}}
+
+
+def test_prediction_invariant_subset():
+    records = [{"metrics": [_comparison(1.0, True), _comparison(0.0, False)]},
+               {"metrics": [_comparison(0.5, True)]}]
+    s = stability_summary(records)
+    assert s["n_comparisons"] == 3 and abs(s["prediction_retention"] - 2 / 3) < 1e-12
+    assert abs(s["all"]["jaccard_at_5"]["mean"] - 0.5) < 1e-12
+    assert abs(s["prediction_invariant"]["jaccard_at_5"]["mean"] - 0.75) < 1e-12
+
+
+def test_faithfulness_rewards_the_decisive_word():
+    # Toy model: class 1 iff the word "great" is present
+    def predict(texts):
+        return np.array([[0.1, 0.9] if "great" in t.split() else [0.9, 0.1] for t in texts])
+
+    text = "the plot was great but long and slow overall"
+    good = [[w, 1.0 if w == "great" else 0.0] for w in text.split()]
+    records = [{"original_text": text, "original_explanation": {"predicted_class": 1, "words": good}}]
+    result = faithfulness(records, predict, random_draws=20)
+    assert abs(result["explainer"]["comprehensiveness"] - 0.8) < 1e-9   # removing "great" always flips
+    assert abs(result["explainer"]["sufficiency"]) < 1e-9               # keeping "great" alone suffices
+    assert result["random"]["comprehensiveness"] < result["explainer"]["comprehensiveness"]
