@@ -21,6 +21,11 @@ class IntegratedGradientsExplainer(BaseExplainer):
     Integrated Gradients explanation method using Captum.
     """
     
+    # Interpolation steps x sequence length per forward/backward batch. Bounds
+    # activation memory on long inputs (all 50 steps of a 60-token input at once
+    # took ~10 GB on DistilBERT); short inputs still run all steps in one batch.
+    TOKEN_BUDGET = 2000
+
     def __init__(self, random_seed: int = 42, n_steps: int = 50):
         super().__init__("IntegratedGradients", random_seed, n_steps=n_steps)
         self.n_steps = n_steps
@@ -74,13 +79,15 @@ class IntegratedGradientsExplainer(BaseExplainer):
             return outputs.logits if hasattr(outputs, 'logits') else outputs[0]
 
         ig = IntegratedGradients(embedding_forward_func)
+        seq_len = input_embeddings.shape[1]
+        internal_batch_size = max(1, min(self.n_steps, self.TOKEN_BUDGET // seq_len))
         attributions, convergence_delta = ig.attribute(
             input_embeddings,
             baselines=baseline_embeddings,
             target=target,
             additional_forward_args=(attention_mask,),
             n_steps=self.n_steps,
-            internal_batch_size=self.n_steps,
+            internal_batch_size=internal_batch_size,
             return_convergence_delta=True
         )
 
