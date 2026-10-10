@@ -7,7 +7,7 @@ Implementation of **"A Framework for Systematic Stability Assessment of Post-hoc
 
 The framework measures how consistent post-hoc explanations (Integrated Gradients, LIME, SHAP) remain when the input is perturbed in ways that should not matter: preprocessing changes, meaning-preserving paraphrases, and, for stochastic explainers, a different random seed. Results are summarised with Jaccard@k, Spearman rank correlation and a normalised attribution difference, and reported as markdown **stability cards**.
 
-> **Note on reproducing the paper.** Version 1.1.0 fixes defects in the code first released with the paper and aligns it with the protocol the paper describes. Some fixes change the numbers the code produces, so results are not expected to match Tables I and II exactly. See [CHANGELOG.md](CHANGELOG.md) for each change and the results it affects.
+> **Relation to the published results.** The implementation follows the protocol described in the paper (Sections III–IV), including evaluation on correctly classified instances only, a zero-vector IG baseline, and T5 classification by conditional generation of the label word. Because these and other implementation details differ from the code used for the conference version, values produced by this repository are not expected to match Tables I and II exactly. Every instance-level result is saved, so all reported values can be traced to the underlying explanations.
 
 ## Table of Contents
 
@@ -92,8 +92,8 @@ The runners use the settings reported in the paper (Section IV.A), defined in [`
 
 1. **Instances.** Load the dataset and keep only the instances the model classifies correctly (Section III.D).
 2. **Stress tests.** For each instance, generate perturbed variants:
-   - **Preprocessing variation**: case (upper, lower, title, random), punctuation (removal, replacement, addition) and spacing changes; 7 variants per instance.
-   - **Semantic paraphrasing**: synonym substitution (content words only, same part of speech), clause reordering, and simple lexical transformations. Variants are kept only if their cosine similarity to the original is ≥ 0.8 (`all-MiniLM-L6-v2`). Up to 4 variants per instance (3.7 on average for SST-2).
+   - **Preprocessing variation**: case (upper, lower, title, random), punctuation (removal, replacement, terminal punctuation where absent) and spacing changes; 7 variants per instance, taken in turn from the three categories so that each is represented. Random variants are seeded per text, so all explainers see identical inputs.
+   - **Semantic paraphrasing**: synonym substitution (base-form content words only, same part of speech), reordering of clauses that each contain a finite verb, and simple lexical transformations, taken in turn from the three categories. Variants are kept only if their cosine similarity to the original is ≥ 0.8 (`all-MiniLM-L6-v2`); without the similarity model the test does not run. Up to 4 variants per instance.
    - **Explainer seed variation**: seeds 42–46, applied to LIME only. IG and SHAP Partition are deterministic.
 3. **Explanations.** Explain the original and every variant with identical settings:
    - **Integrated Gradients**: Captum, 50 steps, zero-vector baseline in embedding space, target = predicted class.
@@ -203,7 +203,7 @@ uv run pytest                 # full suite (downloads models on first run)
 uv run ruff check .           # lint
 ```
 
-Contributions are welcome via issues and pull requests. Please include tests for behaviour changes and note in [CHANGELOG.md](CHANGELOG.md) any change that affects reported numbers.
+Contributions are welcome via issues and pull requests. Please include tests for behaviour changes and state in the pull request any change that affects reported values.
 
 ## Citation
 

@@ -3,7 +3,7 @@
 | File | What it covers | Needs models? |
 |------|----------------|---------------|
 | `test_simple.py` | Metric maths, stress-test logic, model and dataset registries | No |
-| `test_paper_fixes.py` | Regression tests for the fixes in [CHANGELOG.md](../CHANGELOG.md): word alignment, paraphrase generation, configuration precedence, stability-card format. Tests marked `slow` check Integrated Gradients, SHAP alignment, the correct-prediction filter and the T5 classifier against real models | Only the `slow` tests |
+| `test_paper_fixes.py` | Regression tests for protocol and implementation details: word alignment, paraphrase generation, configuration precedence, stability-card format. Tests marked `slow` check Integrated Gradients, SHAP alignment, the correct-prediction filter and the T5 classifier against real models | Only the `slow` tests |
 | `test_integration.py` | Model loading, dataset loading, explainers and a minimal end-to-end experiment | Yes |
 
 ## Running
