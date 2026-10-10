@@ -79,6 +79,7 @@ class T5PromptTokenizer:
         max_length: Optional[int] = None,
         return_offsets_mapping: bool = False,
         add_special_tokens: bool = True,
+        pad_to_multiple_of: Optional[int] = None,
         **kwargs,
     ):
         single = isinstance(text, str)
@@ -98,6 +99,8 @@ class T5PromptTokenizer:
 
         if padding or return_tensors is not None:
             width = max(len(ids) for ids in all_ids)
+            if pad_to_multiple_of:
+                width = -(-width // pad_to_multiple_of) * pad_to_multiple_of
             masks = [[1] * len(ids) + [0] * (width - len(ids)) for ids in all_ids]
             all_offsets = [o + [(0, 0)] * (width - len(o)) for o in all_offsets]
             all_ids = [ids + [self.tokenizer.pad_token_id] * (width - len(ids)) for ids in all_ids]
@@ -172,7 +175,9 @@ class T5LabelScoringClassifier(torch.nn.Module):
             sentence = row_embeds[: length - 1]
             rows.append(torch.cat([prefix, sentence, suffix], dim=0))
 
+        # Pad to a multiple of 64 (masked) to keep the number of distinct shapes small on MPS
         max_len = max(r.shape[0] for r in rows)
+        max_len = -(-max_len // 64) * 64
         out = embeds.new_zeros((len(rows), max_len, embeds.shape[-1]))
         mask = attention_mask.new_zeros((len(rows), max_len))
         for i, r in enumerate(rows):

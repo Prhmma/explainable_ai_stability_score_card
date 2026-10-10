@@ -7,7 +7,7 @@ import numpy as np
 from typing import Any, Dict, Optional
 import logging
 
-from .base import BaseExplainer
+from .base import BaseExplainer, PAD_TO_MULTIPLE_OF
 from .config import CAPTUM_AVAILABLE
 
 if CAPTUM_AVAILABLE:
@@ -21,10 +21,11 @@ class IntegratedGradientsExplainer(BaseExplainer):
     Integrated Gradients explanation method using Captum.
     """
     
-    # Interpolation steps x sequence length per forward/backward batch. Bounds
-    # activation memory on long inputs (all 50 steps of a 60-token input at once
-    # took ~10 GB on DistilBERT); short inputs still run all steps in one batch.
-    TOKEN_BUDGET = 2000
+    # Interpolation steps x (padded) sequence length per forward/backward batch.
+    # Bounds activation memory on long inputs (all 50 steps of a long AG News
+    # input took up to 14.7 GB); inputs padded to 64 tokens still run all 50
+    # steps in one batch.
+    TOKEN_BUDGET = 3200
 
     def __init__(self, random_seed: int = 42, n_steps: int = 50):
         super().__init__("IntegratedGradients", random_seed, n_steps=n_steps)
@@ -51,6 +52,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
             truncation=True, 
             padding=True,
             max_length=512,
+            pad_to_multiple_of=PAD_TO_MULTIPLE_OF,
             return_offsets_mapping=True
         )
         offsets = [tuple(o) for o in inputs.pop('offset_mapping')[0].tolist()]

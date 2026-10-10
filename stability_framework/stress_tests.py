@@ -133,9 +133,21 @@ class PreprocessingVariationTest(BaseStressTest):
                 
         return unique_variants[:8]  # Limit to reasonable number
     
+    def _rng(self, text: str) -> random.Random:
+        """
+        Random generator seeded by the experiment seed and the text itself.
+
+        Variants of a text are then identical for every explainer and do not
+        depend on how many texts were perturbed before (the global random
+        stream made each explainer see different random variants of the same
+        sentence, and a resumed run differ from an uninterrupted one).
+        """
+        return random.Random(f"{self.random_seed}:{text}")
+
     def _generate_case_variants(self, text: str) -> List[str]:
         """Generate case variations."""
         variants = []
+        rng = self._rng(text)
         
         # All uppercase
         variants.append(text.upper())
@@ -152,7 +164,7 @@ class PreprocessingVariationTest(BaseStressTest):
             # Randomly change case of some words
             modified_words = []
             for word in words:
-                if random.random() < 0.3:  # 30% chance to modify
+                if rng.random() < 0.3:  # 30% chance to modify
                     if word.islower():
                         modified_words.append(word.upper())
                     elif word.isupper():
@@ -211,7 +223,7 @@ class PreprocessingVariationTest(BaseStressTest):
         words = text.split()
         if len(words) > 2:
             # Add extra space randomly
-            idx = random.randint(1, len(words) - 1)
+            idx = self._rng(text).randint(1, len(words) - 1)
             spaced_words = words[:idx] + [''] + words[idx:]
             variants.append(' '.join(spaced_words))
             

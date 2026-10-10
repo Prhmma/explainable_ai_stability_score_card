@@ -293,3 +293,34 @@ class TestLegacyParaphrasing:
         assert test._get_cache_key("x").startswith("v1_")
         out = test.apply("a charming film about good people . ")
         assert out[0] == "a charming film about good people . " and len(out) <= 5
+
+
+class TestPreprocessingDeterminism:
+
+    def test_variants_depend_only_on_text_and_seed(self):
+        from stability_framework.stress_tests import create_stress_test
+        text = "the acting is strong , the plot is weak and the ending drags on far too long . "
+        first = create_stress_test("preprocessing_variation").apply(text)
+        test = create_stress_test("preprocessing_variation")
+        for other in ("a gripping film .", "dull , lifeless and slow .", "an uneven but likeable comedy ."):
+            test.apply(other)  # perturbing other texts first must not change this text's variants
+        assert test.apply(text) == first
+
+
+@pytest.mark.slow
+class TestAppleGpuParity:
+    """Unpadded MPS batches gave wrong outputs on some inputs; padded MPS must match the CPU."""
+
+    def test_mps_matches_cpu_for_all_explainers(self):
+        import torch
+        if not torch.backends.mps.is_available():
+            pytest.skip("MPS not available")
+        from stability_framework.explainers import create_explainer
+        from stability_framework.model_loader import ModelLoader
+        name = "distilbert-base-uncased-finetuned-sst-2-english"
+        loaded = {d: ModelLoader(device=d).load_model_and_tokenizer(name) for d in ("cpu", "mps")}
+        text = "a sometimes tedious movie . "  # SHAP flipped 'movie' on unpadded MPS
+        for explainer, kw in [("integrated_gradients", {"n_steps": 20}), ("lime", {"num_samples": 300}), ("shap", {})]:
+            cpu, mps = (create_explainer(explainer, random_seed=42, **kw).explain(*loaded[d], text) for d in ("cpu", "mps"))
+            scale = max(abs(v) for v in cpu["attributions"].values())
+            assert max(abs(cpu["attributions"][k] - mps["attributions"][k]) for k in cpu["attributions"]) < 1e-3 * scale

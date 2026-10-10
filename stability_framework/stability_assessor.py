@@ -364,15 +364,17 @@ class StabilityAssessor:
                 
                 for sample_idx, text in pbar:
                     if sample_idx in completed:
-                        sample_results.append(completed[sample_idx])
+                        sample_results.append(self._slim_record(completed[sample_idx]))
                         continue
                     try:
                         sample_result = self._process_sample(
                             text, labels[sample_idx], explainer, stress_test, sample_idx
                         )
-                        sample_results.append(sample_result)
                         if sample_result is not None:
+                            # Full record goes to disk; keep only what aggregation needs in memory
                             self._append_instance(instance_file, sample_result)
+                            sample_result = self._slim_record(sample_result)
+                        sample_results.append(sample_result)
                         
                         # Update progress bar with current metrics
                         if sample_result and 'metrics' in sample_result:
@@ -386,9 +388,8 @@ class StabilityAssessor:
                         logger.error(f"Error processing sample {sample_idx}: {str(e)}")
                         continue
                         
-                    # Release cached GPU memory periodically
-                    if sample_idx % 10 == 0:
-                        self.model_loader.clear_memory()
+                    # Release cached GPU memory after every instance
+                    self.model_loader.clear_memory()
                 
                 pbar.close()
                 
@@ -482,6 +483,20 @@ class StabilityAssessor:
             logger.error(f"Error in _process_sample for sample {sample_idx}: {str(e)}")
             return None
     
+    # Explanation fields used by aggregation (metrics, per-class split, flip-rate)
+    _AGGREGATION_FIELDS = ('predicted_class', 'confidence', 'attributions', 'text')
+
+    @classmethod
+    def _slim_record(cls, record: Dict[str, Any]) -> Dict[str, Any]:
+        """Copy of an instance record without the fields aggregation does not use (token scores, word lists)."""
+        slim = lambda e: {k: e[k] for k in cls._AGGREGATION_FIELDS if k in e}
+        return {
+            'sample_idx': record['sample_idx'],
+            'metrics': record['metrics'],
+            'original_explanation': slim(record['original_explanation']),
+            'variant_explanations': [slim(e) for e in record['variant_explanations']],
+        }
+
     def _explain_original(self, explainer: Any, text: str) -> Dict[str, Any]:
         """Explain an unperturbed text once per explainer configuration."""
         key = (json.dumps([explainer.name, explainer.random_seed, explainer.get_params()], sort_keys=True), text)

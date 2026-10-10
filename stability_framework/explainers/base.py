@@ -15,6 +15,12 @@ import logging
 logger = logging.getLogger(__name__)
 
 
+# Inputs are padded to a multiple of this length (padding is masked out). On MPS,
+# every distinct tensor shape compiles and caches a new kernel graph; with free
+# input lengths that cache grew by gigabytes over a long run.
+PAD_TO_MULTIPLE_OF = 64
+
+
 class BaseExplainer(ABC):
     """Base class for explanation methods with shared utilities."""
     
@@ -76,6 +82,7 @@ class BaseExplainer(ABC):
                     return_tensors='pt',
                     truncation=True,
                     padding=True,
+                    pad_to_multiple_of=PAD_TO_MULTIPLE_OF,
                     max_length=512
                 )
                 inputs = {k: v.to(model.device) for k, v in inputs.items()}
