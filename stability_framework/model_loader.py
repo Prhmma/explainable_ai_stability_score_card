@@ -427,10 +427,13 @@ class ModelLoader:
                 return predictions, probabilities
     
     def clear_memory(self):
-        """Clear GPU memory cache."""
+        """Release cached GPU memory (CUDA or Apple Silicon MPS)."""
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
-            logger.info("GPU memory cache cleared")
+            logger.debug("CUDA memory cache cleared")
+        if torch.backends.mps.is_available():
+            torch.mps.empty_cache()
+            logger.debug("MPS memory cache cleared")
 
 
 # Predefined model configurations for the four experiments

@@ -386,8 +386,8 @@ class StabilityAssessor:
                         logger.error(f"Error processing sample {sample_idx}: {str(e)}")
                         continue
                         
-                    # Memory management: clear cache periodically
-                    if sample_idx % 50 == 0:
+                    # Release cached GPU memory periodically
+                    if sample_idx % 10 == 0:
                         self.model_loader.clear_memory()
                 
                 pbar.close()

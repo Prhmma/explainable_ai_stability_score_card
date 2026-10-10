@@ -56,28 +56,37 @@ class BaseExplainer(ABC):
             confidence = probabilities[0, predicted_class].item()
         return predicted_class, confidence
     
-    def _create_prediction_function(self, model: Any, tokenizer: Any):
-        """Create prediction function for LIME/SHAP - shared utility."""
+    def _create_prediction_function(self, model: Any, tokenizer: Any, batch_size: int = 128):
+        """
+        Create prediction function for LIME/SHAP - shared utility.
+
+        Texts are scored in chunks of `batch_size`: LIME sends its 1000
+        perturbed samples at once, and a single padded batch of that size
+        made the MPS allocator cache many large, differently sized buffers
+        (an 18 GB footprint on a 24 GB machine).
+        """
         def predict_fn(texts: List[str]) -> np.ndarray:
             # SHAP passes a numpy array of strings, which tokenizers reject
             texts = [texts] if isinstance(texts, str) else [str(t) for t in texts]
-            
-            inputs = tokenizer(
-                texts, 
-                return_tensors='pt', 
-                truncation=True, 
-                padding=True,
-                max_length=512
-            )
-            inputs = {k: v.to(model.device) for k, v in inputs.items()}
-            
-            with torch.no_grad():
-                outputs = model(**inputs)
-                logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
-                probabilities = torch.softmax(logits, dim=-1)
-            
-            return probabilities.cpu().numpy()
-        
+
+            chunks = []
+            for start in range(0, len(texts), batch_size):
+                inputs = tokenizer(
+                    texts[start:start + batch_size],
+                    return_tensors='pt',
+                    truncation=True,
+                    padding=True,
+                    max_length=512
+                )
+                inputs = {k: v.to(model.device) for k, v in inputs.items()}
+
+                with torch.no_grad():
+                    outputs = model(**inputs)
+                    logits = outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+                    chunks.append(torch.softmax(logits, dim=-1).cpu().numpy())
+
+            return np.concatenate(chunks)
+
         return predict_fn
     
     def _prepare_inputs(self, model: Any, tokenizer: Any, text: str) -> Tuple[Dict, int, float]:
