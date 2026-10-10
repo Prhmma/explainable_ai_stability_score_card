@@ -52,72 +52,45 @@ class IntegratedGradientsExplainer(BaseExplainer):
         # Get prediction
         predicted_class, confidence = self._get_prediction(model, inputs)
         target = target_class if target_class is not None else predicted_class
-        
-        # Create baseline (zero embeddings)
-        baseline_ids = torch.zeros_like(inputs['input_ids'])
-        
-        # Setup Integrated Gradients - target the embeddings layer
-        if hasattr(model, 'distilbert') and hasattr(model.distilbert, 'embeddings'):
-            embeddings_layer = model.distilbert.embeddings.word_embeddings
-        elif hasattr(model, 'bert') and hasattr(model.bert, 'embeddings'):
-            embeddings_layer = model.bert.embeddings.word_embeddings
-        elif hasattr(model, 'roberta') and hasattr(model.roberta, 'embeddings'):
-            embeddings_layer = model.roberta.embeddings.word_embeddings
-        else:
-            # Fallback: try to find any embeddings layer
-            embeddings_layer = None
-            for module in model.modules():
-                if hasattr(module, 'weight') and 'embed' in str(type(module)).lower():
-                    embeddings_layer = module
-                    break
-            if embeddings_layer is None:
-                raise ValueError("Could not find embeddings layer in model")
-        
-        ig = IntegratedGradients(embeddings_layer)
-        
-        # Generate attributions (ensure gradients are computed)
-        model.train()  # Enable gradients
-        try:
-            # Get embeddings for the input
+        attention_mask = inputs.get('attention_mask')
+
+        # Attribute with respect to the input embeddings, using the model's own
+        # forward pass so the explained function is exactly the one that made
+        # the prediction. The model stays in eval mode: gradients do not need
+        # train mode, and train mode would enable dropout and make IG
+        # non-deterministic.
+        model.eval()
+        embeddings_layer = model.get_input_embeddings()
+        with torch.no_grad():
             input_embeddings = embeddings_layer(inputs['input_ids'])
-            baseline_embeddings = embeddings_layer(baseline_ids)
-            
-            # Create a simplified forward function that takes embeddings
-            def embedding_forward_func(embeddings):
-                # Replace the embeddings in the model forward pass
-                if hasattr(model, 'distilbert'):
-                    # For DistilBERT, we need to manually construct the forward pass
-                    attention_mask = inputs.get('attention_mask')
-                    outputs = model.distilbert(inputs_embeds=embeddings, attention_mask=attention_mask)
-                    return model.classifier(outputs.last_hidden_state[:, 0])
-                else:
-                    # For other models, this might need adjustment
-                    outputs = model(inputs_embeds=embeddings, attention_mask=inputs.get('attention_mask'))
-                    return outputs.logits if hasattr(outputs, 'logits') else outputs[0]
-            
-            # Temporarily replace the forward function
-            original_ig = ig
-            ig = IntegratedGradients(embedding_forward_func)
-            
-            attributions = ig.attribute(
-                input_embeddings,
-                baselines=baseline_embeddings,
-                target=target,
-                n_steps=self.n_steps,
-                return_convergence_delta=False,
-                internal_batch_size=1
-            )
-        finally:
-            model.eval()  # Return to eval mode
-        
+
+        # Zero-vector baseline in embedding space
+        baseline_embeddings = torch.zeros_like(input_embeddings)
+
+        def embedding_forward_func(embeddings, attention_mask):
+            outputs = model(inputs_embeds=embeddings, attention_mask=attention_mask)
+            return outputs.logits if hasattr(outputs, 'logits') else outputs[0]
+
+        ig = IntegratedGradients(embedding_forward_func)
+        attributions, convergence_delta = ig.attribute(
+            input_embeddings,
+            baselines=baseline_embeddings,
+            target=target,
+            additional_forward_args=(attention_mask,),
+            n_steps=self.n_steps,
+            internal_batch_size=self.n_steps,
+            return_convergence_delta=True
+        )
+
         # Convert to numpy and process
         # Sum over the embedding dimension to get per-token attributions
-        attr_scores = attributions.sum(dim=-1).squeeze().detach().cpu().numpy()
-        tokens = tokenizer.convert_ids_to_tokens(inputs['input_ids'].squeeze())
+        attr_scores = attributions.sum(dim=-1)[0].detach().cpu().numpy()
+        input_ids = inputs['input_ids'][0].tolist()
+        tokens = tokenizer.convert_ids_to_tokens(input_ids)
         
         # Aggregate to word level
         word_attributions = self._aggregate_subword_attributions(
-            attr_scores, tokens, inputs['input_ids'].squeeze().tolist(), tokenizer
+            attr_scores, tokens, input_ids, tokenizer
         )
         
         return {
@@ -128,18 +101,6 @@ class IntegratedGradientsExplainer(BaseExplainer):
             'confidence': confidence,
             'attributions': word_attributions,
             'token_attributions': dict(zip(tokens, attr_scores.tolist())),
-            'parameters': {'n_steps': self.n_steps, 'random_seed': self.random_seed}
+            'convergence_delta': float(convergence_delta.abs().max().item()),
+            'parameters': {'n_steps': self.n_steps, 'baseline': 'zero_embedding', 'random_seed': self.random_seed}
         }
-    
-    def _forward_func(self, input_ids: torch.Tensor, model: Any, attention_mask: Optional[torch.Tensor] = None):
-        """Forward function for Integrated Gradients."""
-        # Ensure input_ids are Long tensors (required for embeddings)
-        input_ids = input_ids.long()
-        
-        inputs = {'input_ids': input_ids}
-        if attention_mask is not None:
-            # Ensure attention_mask is also proper type
-            inputs['attention_mask'] = attention_mask.long() if attention_mask.dtype != torch.long else attention_mask
-            
-        outputs = model(**inputs)
-        return outputs.logits if hasattr(outputs, 'logits') else outputs[0]
