@@ -1,0 +1,27 @@
+cff-version: 1.2.0
+message: "If you use this software, please cite the paper below."
+title: "Stability Assessment Framework for NLP Explanations"
+version: 1.1.0
+license: MIT
+repository-code: "https://github.com/Prhmma/explainable_ai_stability_score_card"
+authors:
+  - family-names: Mohammadalizadeh
+    given-names: Parman
+  - family-names: Mohammadalizadeh
+    given-names: Parham
+  - family-names: Mahmoudian
+    given-names: Ayda
+preferred-citation:
+  type: conference-paper
+  title: "A Framework for Systematic Stability Assessment of Post-hoc Explanations in Text Classification"
+  authors:
+    - family-names: Mohammadalizadeh
+      given-names: Parman
+    - family-names: Mohammadalizadeh
+      given-names: Parham
+    - family-names: Mahmoudian
+      given-names: Ayda
+  collection-title: "2025 16th International Conference on Information and Knowledge Technology (IKT)"
+  publisher:
+    name: IEEE
+  year: 2025

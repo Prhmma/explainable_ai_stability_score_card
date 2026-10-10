@@ -1,12 +1,15 @@
 [project]
 name = "stability-framework"
-version = "1.0.0"
+version = "1.1.0"
 description = "A comprehensive tool for evaluating the stability of explanation methods in text classification models"
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 authors = [
-    { name = "Academic Research Team" }
+    { name = "Parman Mohammadalizadeh" },
+    { name = "Parham Mohammadalizadeh" },
+    { name = "Ayda Mahmoudian" },
 ]
+license = { file = "LICENSE" }
 keywords = ["xai", "explainability", "stability", "nlp", "transformers", "interpretability"]
 classifiers = [
     "Development Status :: 4 - Beta",
@@ -49,7 +52,8 @@ dependencies = [
     "python-dotenv>=0.19.0",
 ]
 
-[project.optional-dependencies]
+[dependency-groups]
+# Installed by `uv sync` by default
 dev = [
     "pytest>=6.0.0",
     "jupyter>=1.0.0",
