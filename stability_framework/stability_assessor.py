@@ -42,7 +42,8 @@ class StabilityAssessor:
         results_dir: str = "results",
         random_seed: int = 42,
         device: Optional[str] = None,
-        max_samples: Optional[int] = None
+        max_samples: Optional[int] = None,
+        correct_predictions_only: bool = True
     ):
         """
         Initialize the stability assessor.
@@ -52,11 +53,14 @@ class StabilityAssessor:
             random_seed: Random seed for reproducibility
             device: Target device ('cuda', 'cpu', or None for auto)
             max_samples: Maximum number of samples to process (None for all)
+            correct_predictions_only: Evaluate stability only on instances the
+                model classifies correctly (the paper's protocol, Section III.D)
         """
         self.results_dir = results_dir
         self.random_seed = random_seed
         self.device = device
         self.max_samples = max_samples
+        self.correct_predictions_only = correct_predictions_only
         
         # Create results directory
         os.makedirs(results_dir, exist_ok=True)
@@ -125,12 +129,19 @@ class StabilityAssessor:
             texts, labels, dataset_metadata = self._load_dataset(dataset_config)
             self.loaded_dataset = (texts, labels, dataset_metadata)
             
-            # Limit samples if specified
+            # Keep only correctly classified instances (paper, Section III.D)
+            if self.correct_predictions_only:
+                texts, labels, filter_info = self._filter_correct_predictions(model, tokenizer, texts, labels)
+                dataset_metadata['correct_prediction_filter'] = filter_info
+
+            # Limit samples if specified (seeded, so the subset is reproducible)
             if self.max_samples and len(texts) > self.max_samples:
-                indices = np.random.choice(len(texts), self.max_samples, replace=False)
+                rng = np.random.RandomState(self.random_seed)
+                indices = sorted(rng.choice(len(texts), self.max_samples, replace=False))
                 texts = [texts[i] for i in indices]
                 labels = [labels[i] for i in indices]
                 logger.info(f"Limited to {self.max_samples} samples")
+            dataset_metadata['evaluated_samples'] = len(texts)
             
             logger.info(f"Dataset loaded: {len(texts)} samples")
             
@@ -161,6 +172,7 @@ class StabilityAssessor:
                     'stress_test_names': stress_test_names,
                     'random_seed': self.random_seed,
                     'max_samples': self.max_samples,
+                    'correct_predictions_only': self.correct_predictions_only,
                     'explainer_params': explainer_params,
                     'stress_test_params': stress_test_params
                 },
@@ -181,6 +193,34 @@ class StabilityAssessor:
             # Clean up GPU memory
             self.model_loader.clear_memory()
     
+    def _filter_correct_predictions(
+        self,
+        model: Any,
+        tokenizer: Any,
+        texts: List[str],
+        labels: List[int],
+        batch_size: int = 32
+    ) -> Tuple[List[str], List[int], Dict[str, Any]]:
+        """Drop instances the model misclassifies; return the kept data and a summary."""
+        predictions = []
+        for start in range(0, len(texts), batch_size):
+            inputs = self.model_loader.prepare_inputs(texts[start:start + batch_size], tokenizer)
+            batch_predictions, _ = self.model_loader.get_predictions(model, inputs)
+            predictions.extend(batch_predictions.cpu().tolist())
+
+        keep = [i for i, (p, y) in enumerate(zip(predictions, labels)) if p == y]
+        info = {
+            'before': len(texts),
+            'kept': len(keep),
+            'removed': len(texts) - len(keep),
+            'accuracy': len(keep) / len(texts) if texts else 0.0
+        }
+        logger.info(
+            f"Correct-prediction filter: kept {info['kept']}/{info['before']} "
+            f"(accuracy {info['accuracy']:.3f})"
+        )
+        return [texts[i] for i in keep], [labels[i] for i in keep], info
+
     def _load_dataset(self, dataset_config: Dict[str, Any]) -> Tuple[List[str], List[int], Dict]:
         """Load dataset based on configuration."""
         from .dataset_loader import DATASET_CONFIGS
@@ -239,9 +279,8 @@ class StabilityAssessor:
                 logger.warning(f"Stress test {name} is not available (missing dependencies)")
                 continue
             
-            # Get parameters for this stress test
-            test_params = params.get(name, {})
-            test_params.update(AVAILABLE_STRESS_TESTS[name].get('parameters', {}))
+            # Defaults first, then the caller's parameters take precedence
+            test_params = {**AVAILABLE_STRESS_TESTS[name].get('parameters', {}), **params.get(name, {})}
             
             stress_test = create_stress_test(name, random_seed=self.random_seed, **test_params)
             stress_tests.append(stress_test)
@@ -369,19 +408,11 @@ class StabilityAssessor:
             variant_explanations = []
             for i, (variant_text, seed) in enumerate(zip(variant_texts, seeds)):
                 if stress_test.name == 'SeedVariation':
-                    # For seed variation, create new explainer instance with different seed
-                    # Get original explainer parameters
-                    explainer_params = {}
-                    if hasattr(explainer, 'n_steps'):
-                        explainer_params['n_steps'] = explainer.n_steps
-                    if hasattr(explainer, 'num_samples'):
-                        explainer_params['num_samples'] = explainer.num_samples
-                    
-                    # Create explainer with different seed
+                    # Same explainer and parameters, different seed
                     variant_explainer = create_explainer(
-                        explainer.name.lower(), 
+                        explainer.name.lower(),
                         random_seed=seed,
-                        **explainer_params
+                        **explainer.get_params()
                     )
                     variant_exp = variant_explainer.explain(
                         self.loaded_model, self.loaded_tokenizer, variant_text
@@ -433,13 +464,34 @@ class StabilityAssessor:
         
         # Aggregate metrics
         aggregated = self.metrics_calculator.aggregate_metrics(all_metrics)
-        
+
+        valid_results = [r for r in sample_results if r and 'metrics' in r]
+
+        # Stratify by predicted class (paper, Section III.D)
+        by_class: Dict[Any, List[Dict[str, Any]]] = {}
+        for r in valid_results:
+            by_class.setdefault(r['original_explanation']['predicted_class'], []).extend(r['metrics'])
+        aggregated['by_predicted_class'] = {
+            label: self.metrics_calculator.aggregate_metrics(metrics)
+            for label, metrics in sorted(by_class.items())
+        }
+
+        # Flip-rate: prediction stays stable while the explanation changes
+        aggregated['flip_rate'] = self.metrics_calculator.flip_rate([
+            {'original': r['original_explanation'], 'variants': r['variant_explanations'][1:]}
+            for r in valid_results
+        ])
+
         # Add sample-level statistics
+        failed = len(sample_results) - len(valid_results)
         aggregated['sample_statistics'] = {
             'total_samples': len(sample_results),
-            'successful_samples': len([r for r in sample_results if r is not None]),
+            'successful_samples': len(valid_results),
+            'failed_samples': failed,
             'total_comparisons': len(all_metrics)
         }
+        if failed:
+            logger.warning(f"{failed}/{len(sample_results)} samples failed and were excluded")
         
         return aggregated
     

@@ -22,7 +22,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
     """
     
     def __init__(self, random_seed: int = 42, n_steps: int = 50):
-        super().__init__("IntegratedGradients", random_seed)
+        super().__init__("IntegratedGradients", random_seed, n_steps=n_steps)
         self.n_steps = n_steps
         
         if not CAPTUM_AVAILABLE:

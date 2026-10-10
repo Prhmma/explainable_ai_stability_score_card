@@ -22,7 +22,6 @@ class LIMEExplainer(BaseExplainer):
         super().__init__("LIME", random_seed, num_samples=num_samples)
         if not LIME_AVAILABLE:
             raise ImportError("LIME is required for LIMEExplainer")
-        self.explainer = LimeTextExplainer(class_names=['negative', 'positive'], random_state=random_seed)
     
     def explain(self, model: Any, tokenizer: Any, text: str, target_class: Optional[int] = None) -> Dict[str, Any]:
         """Generate LIME explanation."""
@@ -30,10 +29,15 @@ class LIMEExplainer(BaseExplainer):
         target = target_class if target_class is not None else predicted_class
         
         predict_fn = self._create_prediction_function(model, tokenizer)
+
+        # A fresh explainer per call, seeded with this explainer's seed, so each
+        # explanation depends only on (text, seed) and not on how many texts were
+        # explained before it. Seed variation then compares seed 42 vs 43-46 exactly.
+        explainer = LimeTextExplainer(random_state=self.random_seed)
         # LIME's default bag-of-words features are the \w+ runs of the text;
         # request all of them so no word is silently assigned zero.
         lime_words = re.findall(r"\w+", text)
-        explanation = self.explainer.explain_instance(
+        explanation = explainer.explain_instance(
             text, predict_fn, num_features=max(1, len(set(lime_words))),
             num_samples=self.params['num_samples'], labels=[target]
         )

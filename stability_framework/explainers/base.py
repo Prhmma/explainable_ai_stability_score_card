@@ -31,6 +31,10 @@ class BaseExplainer(ABC):
         if torch.cuda.is_available():
             torch.cuda.manual_seed(seed)
     
+    def get_params(self) -> Dict[str, Any]:
+        """Constructor parameters (excluding the seed), to re-create this explainer with another seed."""
+        return dict(self.params)
+
     @abstractmethod
     def explain(
         self, 
