@@ -450,9 +450,8 @@ EXPERIMENT_MODELS = {
         "architecture": "roberta",
     },
     "experiment_4": {
-        "name": "jerrybuilds/distilbert-ag_news",  # Would need fine-tuning for AG-News
-        "description": "DistilBERT for AG-News classification",
+        "name": "textattack/distilbert-base-uncased-ag-news",
+        "description": "DistilBERT fine-tuned on AG-News (4 classes)",
         "architecture": "distilbert",
-        "note": "Requires custom fine-tuning setup"
     }
 }

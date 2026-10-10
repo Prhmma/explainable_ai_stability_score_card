@@ -40,7 +40,7 @@ class StabilityCardGenerator:
             self._generate_footer()
         ]
         
-        return '\n\n'.join(card_sections)
+        return '\n\n'.join(section for section in card_sections if section)
     
     def _generate_header(self, results: Dict[str, Any]) -> str:
         """Generate the header section."""

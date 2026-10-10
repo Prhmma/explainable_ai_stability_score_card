@@ -54,7 +54,6 @@ class DatasetLoader:
     def __init__(self, random_seed: int = 42):
         """Initialize with random seed for reproducibility."""
         self.random_seed = random_seed
-        np.random.seed(random_seed)
         logger.info(f"DatasetLoader initialized with seed: {random_seed}")
     
     def load_dataset(
@@ -96,7 +95,7 @@ class DatasetLoader:
             metadata = self._build_metadata(
                 texts=texts,
                 labels=labels,
-                dataset_name=config.dataset_name.replace("_", ""),
+                dataset_name=display_name,
                 split=config.split if not stratify else f"{config.split}_stratified",
                 text_column=config.text_column,
                 label_column=config.label_column
@@ -131,9 +130,11 @@ class DatasetLoader:
         Returns:
             (sampled_texts, sampled_labels)
         """
+        # Seeded per call, so the sample does not depend on global RNG state
+        rng = np.random.RandomState(self.random_seed)
         if not stratify:
             # Simple random sampling
-            indices = np.random.choice(len(texts), sample_size, replace=False)
+            indices = rng.choice(len(texts), sample_size, replace=False)
             return [texts[i] for i in indices], [labels[i] for i in indices]
         
         # Stratified sampling
@@ -149,14 +150,14 @@ class DatasetLoader:
             
             # Sample from this class
             n_samples = min(samples_per_class, len(class_indices))
-            sampled_indices = np.random.choice(class_indices, n_samples, replace=False)
+            sampled_indices = rng.choice(class_indices, n_samples, replace=False)
             
             sampled_texts.extend([texts[i] for i in sampled_indices])
             sampled_labels.extend([labels[i] for i in sampled_indices])
         
         # Shuffle combined results
         combined = list(zip(sampled_texts, sampled_labels))
-        np.random.shuffle(combined)
+        rng.shuffle(combined)
         sampled_texts, sampled_labels = zip(*combined)
         
         return list(sampled_texts), list(sampled_labels)
