@@ -100,6 +100,24 @@ input by character offset, and key each occurrence by its lowercased form
 - The paraphrase cache moved to `~/.cache/stability_framework` and its key now
   includes a generator version, so caches from older code are never reused.
 
+### Apple Silicon (MPS) and long runs
+
+- **PyTorch's fused SDPA attention gave wrong outputs on MPS for some
+  inputs** (in a 60-text test, one prediction differed from the CPU and
+  SHAP attributions were off by up to 200%). Models now use eager attention
+  on MPS, which matches the CPU on all models and explainers tested.
+- Inputs are padded to multiples of 16 tokens, LIME/SHAP predictions are
+  chunked, Integrated Gradients steps are batched by a token budget, and
+  cached GPU memory is released per instance, keeping memory bounded on a
+  24 GB machine.
+- Undefined Spearman correlations and attribution differences (fewer than
+  two common words, constant scores) are NaN and excluded, instead of 0.0.
+- Preprocessing's random variants are seeded per text, so every explainer
+  sees the same variants and resumed runs match uninterrupted ones.
+- Runs are resumable and write per-instance results (`results/per_instance/`).
+- `analysis/` computes the paper comparison, prediction-invariant stability,
+  cross-method agreement, faithfulness and perturbation-strength analyses.
+
 ### Reporting and reproducibility
 
 - Stability cards report one row per explainer and stress test, with J@5, ρ
