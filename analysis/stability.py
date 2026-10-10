@@ -22,10 +22,13 @@ def load_per_instance(instance_dir: str) -> Dict[Tuple[str, str], List[Dict[str,
 
 
 def _summarize(values: Iterable[float]) -> Dict[str, float]:
+    """Mean, sd and count over defined values; undefined (NaN) comparisons are counted separately."""
     arr = np.asarray(list(values), dtype=float)
-    if arr.size == 0:
-        return {'mean': float('nan'), 'std': float('nan'), 'n': 0}
-    return {'mean': float(arr.mean()), 'std': float(arr.std()), 'n': int(arr.size)}
+    defined = arr[~np.isnan(arr)]
+    undefined = int(arr.size - defined.size)
+    if defined.size == 0:
+        return {'mean': float('nan'), 'std': float('nan'), 'n': 0, 'undefined': undefined}
+    return {'mean': float(defined.mean()), 'std': float(defined.std()), 'n': int(defined.size), 'undefined': undefined}
 
 
 def stability_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:

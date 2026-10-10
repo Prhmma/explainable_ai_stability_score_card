@@ -65,12 +65,13 @@ def stability_by_strength(rows: List[Dict[str, float]], axis: str = 'edit_fracti
         idx = [i for i, v in enumerate(values) if lo <= v < hi]
         out['bins'].append({
             'range': [lo, hi], 'n': len(idx),
-            'jaccard_at_5': float(np.mean([rows[i]['jaccard_at_5'] for i in idx])) if idx else None,
-            'spearman_correlation': float(np.mean([rows[i]['spearman_correlation'] for i in idx])) if idx else None,
+            'jaccard_at_5': float(np.nanmean([rows[i]['jaccard_at_5'] for i in idx])) if idx else None,
+            'spearman_correlation': float(np.nanmean([rows[i]['spearman_correlation'] for i in idx])) if idx else None,
             'prediction_retention': float(np.mean([rows[i]['same_prediction'] for i in idx])) if idx else None,
         })
     for metric in ('jaccard_at_5', 'spearman_correlation'):
-        y = np.array([r[metric] for r in rows])
-        rho = spearmanr(values, y).correlation if len(set(values)) > 1 else float('nan')
+        y = np.array([r[metric] for r in rows], dtype=float)
+        keep = ~np.isnan(y)
+        rho = spearmanr(values[keep], y[keep]).correlation if len(set(values[keep])) > 1 else float('nan')
         out[f'spearman_strength_vs_{metric}'] = float(rho)
     return out

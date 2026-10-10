@@ -46,10 +46,11 @@ class AttributionDifference(Metric):
         common_tokens = set(original_attrs.keys()).intersection(perturbed_attrs.keys())
         
         if not common_tokens:
+            # Undefined without common tokens (0.0 would read as perfectly stable)
             return {
-                'mean_absolute_difference': 0.0,
-                'relative_difference_percentage': 0.0,
-                'max_difference': 0.0,
+                'mean_absolute_difference': float('nan'),
+                'relative_difference_percentage': float('nan'),
+                'max_difference': float('nan'),
                 'common_tokens': 0
             }
         

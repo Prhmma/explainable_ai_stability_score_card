@@ -118,6 +118,7 @@ Mean ± standard deviation over all pairwise comparisons between each instance's
         table += """
 
 *AD (%)*: attribution difference, Σ|a₁ᵢ − a₂ᵢ| / (n · max(‖a₁‖∞, ‖a₂‖∞)) × 100 over common words.
+ρ and AD are undefined when two explanations share fewer than two words (ρ also when one side's scores are constant); such comparisons are excluded from their means.
 *Flip-rate*: share of comparisons where the prediction is stable (same class, confidence change ≤ 0.1) but the explanation is not (J@5 < 0.5 or ρ < 0.7)."""
         return table
 

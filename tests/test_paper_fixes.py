@@ -264,3 +264,21 @@ class TestT5Classifier:
     def test_no_untrained_parameters(self, t5):
         model, _ = t5
         assert sum(p.numel() for p in model.parameters()) == sum(p.numel() for p in model.t5_model.parameters())
+
+
+class TestUndefinedMetrics:
+
+    def test_spearman_undefined_is_nan_and_excluded(self):
+        import math
+        from stability_framework.metrics import StabilityMetrics
+        m = StabilityMetrics()
+        assert math.isnan(m.spearman_rank_correlation({"bad": 1.0, ".": 0.1}, {"bad": 0.5}))
+        assert math.isnan(m.spearman_rank_correlation({"a": 1.0, "b": 1.0}, {"a": 0.3, "b": 0.9}))
+        agg = m.aggregate_metrics([{"spearman_correlation": float("nan")}, {"spearman_correlation": 0.5}])
+        assert agg["spearman_correlation"]["mean"] == 0.5 and agg["spearman_correlation"]["count"] == 1
+
+    def test_attribution_difference_undefined_without_common_words(self):
+        import math
+        from stability_framework.metrics import StabilityMetrics
+        result = StabilityMetrics().attribution_difference({"a": 1.0}, {"b": 1.0})
+        assert math.isnan(result["relative_difference_percentage"]) and result["common_tokens"] == 0
