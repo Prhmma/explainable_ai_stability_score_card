@@ -17,6 +17,8 @@ logger = logging.getLogger(__name__)
 
 class LIMEExplainer(BaseExplainer):
     """LIME explanation method."""
+
+    stochastic = True
     
     def __init__(self, random_seed: int = 42, num_samples: int = 1000):
         super().__init__("LIME", random_seed, num_samples=num_samples)

@@ -211,14 +211,17 @@ class ModelLoader:
     Handles device management and provides consistent interface.
     """
     
-    def __init__(self, device: Optional[str] = None):
+    def __init__(self, device: Optional[str] = None, attn_implementation: Optional[str] = None):
         """
         Initialize model loader.
         
         Args:
             device: Target device ('cuda', 'cpu', or None for auto-detection)
+            attn_implementation: Override the attention implementation (default:
+                'eager' on MPS, the model's default elsewhere)
         """
         self.device = self._get_device(device)
+        self.attn_implementation = attn_implementation
         logger.info(f"ModelLoader initialized with device: {self.device}")
         
     def _get_device(self, device: Optional[str] = None) -> str:
@@ -260,7 +263,10 @@ class ModelLoader:
             # PyTorch's fused SDPA attention on Apple Silicon (MPS) gives wrong
             # outputs for some inputs (in one test, a different predicted class
             # than the CPU for 1 of 60 SST-2 texts); eager attention matches the CPU.
-            attn_kwargs = {'attn_implementation': 'eager'} if self.device == 'mps' else {}
+            if self.attn_implementation is not None:
+                attn_kwargs = {'attn_implementation': self.attn_implementation}
+            else:
+                attn_kwargs = {'attn_implementation': 'eager'} if self.device == 'mps' else {}
 
             # Handle special cases and architectures
             if "t5" in model_name.lower():

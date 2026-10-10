@@ -332,3 +332,23 @@ class TestAppleGpuParity:
             cpu, mps = (create_explainer(explainer, random_seed=42, **kw).explain(*loaded[d], text) for d in ("cpu", "mps"))
             scale = max(abs(v) for v in cpu["attributions"].values())
             assert max(abs(cpu["attributions"][k] - mps["attributions"][k]) for k in cpu["attributions"]) < 1e-3 * scale
+
+
+class TestLegacyComponents:
+
+    def test_legacy_aggregate_reproduces_released_behaviour(self):
+        from stability_framework.legacy.explainers import legacy_aggregate
+
+        class Tok:
+            special_tokens_map = {"cls_token": "[CLS]", "sep_token": "[SEP]"}
+        words = legacy_aggregate(["[CLS]", "not", "good", "not", "un", "##sure", "[SEP]"], [9, 1, 2, 3, 4, 5, 9], Tok())
+        assert words == {"not": 3, "good": 2, "unsure": 9}  # repeated 'not' overwritten, as released
+
+    def test_explainers_reconstruct_with_seed_and_flag_stochasticity(self):
+        from stability_framework.explainers import create_explainer
+        from stability_framework.legacy.explainers import LegacyAlignmentLIME, LegacyConfigIG
+        assert create_explainer("lime").stochastic and not create_explainer("shap").stochastic
+        lime = LegacyAlignmentLIME(42, num_samples=300)
+        clone = lime.with_seed(43)
+        assert type(clone) is LegacyAlignmentLIME and clone.random_seed == 43 and clone.params["num_samples"] == 300
+        assert LegacyConfigIG(42, n_steps=25).with_seed(7).n_steps == 25

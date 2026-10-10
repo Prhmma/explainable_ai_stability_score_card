@@ -341,9 +341,10 @@ class StabilityAssessor:
             for stress_test in stress_tests:
                 stress_test_name = stress_test.name
                 
-                # Skip seed variation for non-LIME explainers (seed variation only applies to LIME)
-                if stress_test_name == 'SeedVariation' and explainer_name.upper() != 'LIME':
-                    logger.info(f"Skipping {stress_test_name} for {explainer_name} (only applicable to LIME)")
+                # Seed variation applies only to stochastic explainers (LIME); IG and
+                # SHAP Partition are deterministic
+                if stress_test_name == 'SeedVariation' and not explainer.stochastic:
+                    logger.info(f"Skipping {stress_test_name} for {explainer_name} (deterministic explainer)")
                     continue
                 
                 logger.info(f"Running {explainer_name} with {stress_test_name}")
@@ -443,12 +444,8 @@ class StabilityAssessor:
                     variant_explanations.append(original_explanation)
                     continue
                 if stress_test.name == 'SeedVariation':
-                    # Same explainer and parameters, different seed
-                    variant_explainer = create_explainer(
-                        explainer.name.lower(),
-                        random_seed=seed,
-                        **explainer.get_params()
-                    )
+                    # Same explainer class and parameters, different seed
+                    variant_explainer = explainer.with_seed(seed)
                     variant_exp = variant_explainer.explain(
                         self.loaded_model, self.loaded_tokenizer, variant_text
                     )

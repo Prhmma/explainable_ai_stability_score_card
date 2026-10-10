@@ -23,6 +23,9 @@ PAD_TO_MULTIPLE_OF = 16
 
 class BaseExplainer(ABC):
     """Base class for explanation methods with shared utilities."""
+
+    # Whether explanations depend on a random seed (seed variation applies only then)
+    stochastic = False
     
     def __init__(self, name: str, random_seed: int = 42, **params):
         self.name = name
@@ -40,6 +43,10 @@ class BaseExplainer(ABC):
     def get_params(self) -> Dict[str, Any]:
         """Constructor parameters (excluding the seed), to re-create this explainer with another seed."""
         return dict(self.params)
+
+    def with_seed(self, seed: int) -> "BaseExplainer":
+        """A new explainer of the same class and parameters with a different seed."""
+        return type(self)(random_seed=seed, **self.get_params())
 
     @abstractmethod
     def explain(
