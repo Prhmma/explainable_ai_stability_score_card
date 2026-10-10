@@ -61,3 +61,20 @@ def test_stability_by_strength_bins_and_correlation():
     out = stability_by_strength(rows)
     assert [b["n"] for b in out["bins"]] == [1, 1, 1, 1]
     assert out["spearman_strength_vs_jaccard_at_5"] < -0.99
+
+
+def test_sensitivity_undefined_as_zero_and_base_names():
+    from analysis.sensitivity import _base_name, undefined_as_zero
+    assert _base_name("LIMELegacyAlignment") == "LIME" and _base_name("IntegratedGradientsLegacyConfig") == "IntegratedGradients"
+    nan = float("nan")
+    rows = [{"metrics": [_comparison(0.8, True) | {"spearman_correlation": nan}, _comparison(0.6, True)]}]
+    out = undefined_as_zero({("LIME", "PreprocessingVariation"): rows})["LIME/PreprocessingVariation"]
+    assert out["current"]["all"]["spearman_correlation"]["mean"] == 0.6
+    assert abs(out["reverted"]["all"]["spearman_correlation"]["mean"] - 0.3) < 1e-12
+
+
+def test_shared_random_stream_detects_differing_variants():
+    from analysis.sensitivity import shared_random_stream
+    texts = [f"the film number {i} is good and long and slow ." for i in range(30)]
+    s = shared_random_stream(texts)
+    assert s["instances"] == 30 and 0 < s["instances_with_differing_variants"] <= 30
