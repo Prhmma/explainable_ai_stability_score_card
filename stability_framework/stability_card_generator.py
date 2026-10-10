@@ -32,6 +32,7 @@ class StabilityCardGenerator:
         card_sections = [
             self._generate_header(results),
             self._generate_metrics_summary_table(results),
+            self._generate_class_breakdown(results),
             self._generate_detailed_metrics(results),
             self._generate_interpretation_guidelines(results),
             self._generate_statistical_summary(results),
@@ -44,76 +45,100 @@ class StabilityCardGenerator:
     def _generate_header(self, results: Dict[str, Any]) -> str:
         """Generate the header section."""
         config = results.get('configuration', {})
-        model_info = results.get('model_info', {})
         dataset_info = results.get('dataset_info', {})
-        
+
         model_name = config.get('model_name', 'Unknown Model')
         dataset_name = dataset_info.get('dataset_name', 'Unknown Dataset')
-        total_samples = dataset_info.get('total_samples', 'N/A')
+        loaded = dataset_info.get('total_samples', 'N/A')
+        evaluated = dataset_info.get('evaluated_samples', loaded)
         explainer_names = ', '.join(config.get('explainer_names', []))
         timestamp = results.get('timestamp', 'Unknown')
-        
-        header = f"""# Stability Assessment Card
+
+        filter_info = dataset_info.get('correct_prediction_filter')
+        if filter_info:
+            population = (
+                f"{evaluated} evaluated: {filter_info['kept']} of {filter_info['before']} loaded instances "
+                f"were correctly classified (accuracy {filter_info['accuracy']:.3f}); "
+                f"only correctly classified instances are assessed"
+            )
+        else:
+            population = f"{evaluated} evaluated of {loaded} loaded (no correct-prediction filter)"
+
+        return f"""# Stability Assessment Card
 
 **Model**: {model_name}  
-**Dataset**: {dataset_name} ({total_samples} examples)  
+**Dataset**: {dataset_name}  
+**Instances**: {population}  
 **Explainers**: {explainer_names}  
 **Generated**: {timestamp}  
 
 ## Overview
 
-This stability card evaluates the reliability and consistency of explanation methods for the specified model-dataset combination. The assessment uses three categories of stress tests to measure explanation stability across different perturbation scenarios."""
-        
-        return header
-    
-    def _generate_metrics_summary_table(self, results: Dict[str, Any]) -> str:
-        """Generate the main metrics summary table."""
-        summary_table = """## Stability Metrics Summary
+This stability card evaluates the consistency of explanation methods for the specified model-dataset combination under three categories of stress tests: explainer seed variation (stochastic explainers only), preprocessing variation, and semantic paraphrasing."""
 
-| Stress Test | Jaccard@5 | Spearman | Flip-Rate | Attr-Diff |
-|-------------|-----------|----------|-----------|-----------|"""
-        
-        # Get results by stress test
-        by_stress_test = results.get('results', {}).get('by_stress_test', {})
-        
-        for stress_test_name in ['SeedVariation', 'PreprocessingVariation', 'SemanticParaphrasing']:
-            if stress_test_name not in by_stress_test:
-                continue
-                
-            # Aggregate across all explainers for this stress test
-            jaccard_values = []
-            spearman_values = []
-            attr_diff_values = []
-            
-            for explainer_name, explainer_data in by_stress_test[stress_test_name].items():
-                if 'jaccard_at_5' in explainer_data:
-                    jaccard_values.append(explainer_data['jaccard_at_5']['mean'])
-                if 'spearman_correlation' in explainer_data:
-                    spearman_values.append(explainer_data['spearman_correlation']['mean'])
-                if 'attr_diff_mean_absolute_difference' in explainer_data:
-                    attr_diff_values.append(explainer_data['attr_diff_mean_absolute_difference']['mean'])
-            
-            # Calculate means and standard deviations
-            jaccard_mean = sum(jaccard_values) / len(jaccard_values) if jaccard_values else 0
-            jaccard_std = self._calculate_std(jaccard_values) if len(jaccard_values) > 1 else 0
-            
-            spearman_mean = sum(spearman_values) / len(spearman_values) if spearman_values else 0
-            spearman_std = self._calculate_std(spearman_values) if len(spearman_values) > 1 else 0
-            
-            attr_diff_mean = sum(attr_diff_values) / len(attr_diff_values) if attr_diff_values else 0
-            
-            # Format row
-            display_name = self._format_stress_test_name(stress_test_name)
-            jaccard_cell = f"{jaccard_mean:.2f} ± {jaccard_std:.2f}"
-            spearman_cell = f"{spearman_mean:.2f} ± {spearman_std:.2f}"
-            flip_rate_cell = "N/A"  # TODO: Calculate flip rate
-            attr_diff_cell = f"{attr_diff_mean:.3f}"
-            
-            summary_table += f"""
-| {display_name} | {jaccard_cell} | {spearman_cell} | {flip_rate_cell} | {attr_diff_cell} |"""
-        
-        return summary_table
-    
+    # (result key, column header) for the paper's three metrics
+    SUMMARY_METRICS = [
+        ('jaccard_at_5', 'J@5'),
+        ('spearman_correlation', 'ρ'),
+        ('attr_diff_relative_difference_percentage', 'AD (%)'),
+    ]
+    STRESS_TEST_ORDER = ['SeedVariation', 'PreprocessingVariation', 'SemanticParaphrasing']
+
+    def _format_mean_std(self, metrics_data: Dict[str, Any], key: str) -> str:
+        stats = metrics_data.get(key)
+        if not stats:
+            return "N/A"
+        return f"{stats['mean']:.3f} ± {stats['std']:.3f}"
+
+    def _generate_metrics_summary_table(self, results: Dict[str, Any]) -> str:
+        """Generate the main summary table: one row per explainer and stress test (as in the paper's tables)."""
+        header_cells = " | ".join(label for _, label in self.SUMMARY_METRICS)
+        table = f"""## Stability Metrics Summary
+
+Mean ± standard deviation over all pairwise comparisons between each instance's original and perturbed explanations.
+
+| Explainer | Stress Test | {header_cells} | Flip-rate | Comparisons |
+|-----------|-------------|{"|".join("---" for _ in self.SUMMARY_METRICS)}|-----------|-------------|"""
+
+        by_explainer = results.get('results', {}).get('by_explainer', {})
+        for explainer_name, explainer_data in by_explainer.items():
+            for stress_test_name in self.STRESS_TEST_ORDER:
+                metrics_data = explainer_data.get(stress_test_name)
+                if metrics_data is None:
+                    continue
+                if 'error' in metrics_data:
+                    table += f"\n| {explainer_name} | {self._format_stress_test_name(stress_test_name)} | {metrics_data['error']} |"
+                    continue
+                cells = " | ".join(self._format_mean_std(metrics_data, key) for key, _ in self.SUMMARY_METRICS)
+                flip = metrics_data.get('flip_rate', {})
+                flip_cell = f"{flip['flip_rate_percentage']:.1f}%" if 'flip_rate_percentage' in flip else "N/A"
+                n = metrics_data.get('sample_statistics', {}).get('total_comparisons', 'N/A')
+                table += f"\n| {explainer_name} | {self._format_stress_test_name(stress_test_name)} | {cells} | {flip_cell} | {n} |"
+
+        table += """
+
+*AD (%)*: attribution difference, Σ|a₁ᵢ − a₂ᵢ| / (n · max(‖a₁‖∞, ‖a₂‖∞)) × 100 over common words.
+*Flip-rate*: share of comparisons where the prediction is stable (same class, confidence change ≤ 0.1) but the explanation is not (J@5 < 0.5 or ρ < 0.7)."""
+        return table
+
+    def _generate_class_breakdown(self, results: Dict[str, Any]) -> str:
+        """Per-predicted-class results for multi-class tasks (paper, Section III.D)."""
+        if results.get('model_info', {}).get('num_labels', 2) <= 2:
+            return ""
+        header_cells = " | ".join(label for _, label in self.SUMMARY_METRICS)
+        table = f"""## Results by Predicted Class
+
+| Explainer | Stress Test | Class | {header_cells} |
+|-----------|-------------|-------|{"|".join("---" for _ in self.SUMMARY_METRICS)}|"""
+        by_explainer = results.get('results', {}).get('by_explainer', {})
+        for explainer_name, explainer_data in by_explainer.items():
+            for stress_test_name in self.STRESS_TEST_ORDER:
+                metrics_data = explainer_data.get(stress_test_name) or {}
+                for label, class_data in metrics_data.get('by_predicted_class', {}).items():
+                    cells = " | ".join(self._format_mean_std(class_data, key) for key, _ in self.SUMMARY_METRICS)
+                    table += f"\n| {explainer_name} | {self._format_stress_test_name(stress_test_name)} | {label} | {cells} |"
+        return table
+
     def _generate_detailed_metrics(self, results: Dict[str, Any]) -> str:
         """Generate detailed metrics breakdown."""
         detailed_section = "## Detailed Results\n"
@@ -161,6 +186,8 @@ This stability card evaluates the reliability and consistency of explanation met
 
 ### Stability Metrics Interpretation
 
+The bands below are heuristic reading aids, not empirically calibrated thresholds.
+
 **Jaccard@K Similarity (0.0 - 1.0)**
 - > 0.8: Highly stable explanations
 - 0.6 - 0.8: Moderately stable explanations  
@@ -173,9 +200,9 @@ This stability card evaluates the reliability and consistency of explanation met
 - 0.3 - 0.6: Weak ranking consistency
 - < 0.3: Poor ranking consistency
 
-**Attribution Difference**
-- Lower values indicate more stable attributions
-- Compare relative differences across methods
+**Attribution Difference (AD, %)**
+- Lower values indicate more stable attribution magnitudes
+- Normalized by word count and the larger maximum |attribution|, so comparable across inputs and methods
 
 ### Stress Test Interpretation
 
@@ -197,7 +224,7 @@ This stability card evaluates the reliability and consistency of explanation met
         config = results.get('configuration', {})
         dataset_info = results.get('dataset_info', {})
         
-        total_samples = dataset_info.get('total_samples', 'N/A')
+        total_samples = dataset_info.get('evaluated_samples', dataset_info.get('total_samples', 'N/A'))
         duration = results.get('duration_seconds', 0)
         avg_time_per_sample = duration / max(1, int(total_samples)) if isinstance(total_samples, int) else 0
         
@@ -250,7 +277,7 @@ This stability card evaluates the reliability and consistency of explanation met
 *Generated by Stability Assessment Framework v1.0*  
 *Report timestamp: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*  
 
-For academic use, please cite the associated publication and methodology."""
+Mohammadalizadeh, P., Mohammadalizadeh, P., and Mahmoudian, A. "A Framework for Systematic Stability Assessment of Post-hoc Explanations in Text Classification." 16th International Conference on Information and Knowledge Technology (IKT), 2025."""
         
         return footer
     

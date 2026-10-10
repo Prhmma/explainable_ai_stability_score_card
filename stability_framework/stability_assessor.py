@@ -504,7 +504,10 @@ class StabilityAssessor:
         }
         
         # Extract key metrics for summary
-        key_metrics = ['jaccard_at_5', 'spearman_correlation', 'attr_diff_mean_absolute_difference']
+        key_metrics = [
+            'jaccard_at_5', 'spearman_correlation',
+            'attr_diff_relative_difference_percentage', 'attr_diff_mean_absolute_difference'
+        ]
         
         for explainer in summary['explainers_tested']:
             explainer_summary = {}
