@@ -51,8 +51,8 @@ class BaseExplainer(ABC):
     def _create_prediction_function(self, model: Any, tokenizer: Any):
         """Create prediction function for LIME/SHAP - shared utility."""
         def predict_fn(texts: List[str]) -> np.ndarray:
-            if isinstance(texts, str):
-                texts = [texts]
+            # SHAP passes a numpy array of strings, which tokenizers reject
+            texts = [texts] if isinstance(texts, str) else [str(t) for t in texts]
             
             inputs = tokenizer(
                 texts, 
