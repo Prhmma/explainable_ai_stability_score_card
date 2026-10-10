@@ -13,175 +13,191 @@ from transformers import (
     RobertaForSequenceClassification, RobertaTokenizer,
     DistilBertForSequenceClassification, DistilBertTokenizer
 )
-from typing import Tuple, Dict, Any, Optional
+from transformers import BatchEncoding
+from transformers.modeling_outputs import SequenceClassifierOutput
+from typing import Tuple, Dict, Any, Optional, List
 import logging
 
 logger = logging.getLogger(__name__)
 
 
-class T5ClassificationWrapper:
+# Prompt templates used to fine-tune the FLAN-T5 GLUE checkpoints (FusionBench,
+# fusion_bench/tasks/flan_t5_text_generation/glue_prompt_templates.py).
+T5_PROMPT_TEMPLATES = {
+    "sst2": {
+        "input_text": "Given the sentence '{sentence}', determine the sentiment. Is it positive or negative?",
+        "label_words": ["negative", "positive"],
+    },
+}
+
+
+class T5PromptTokenizer:
     """
-    Wrapper for T5 models to handle classification tasks.
-    T5 is a seq2seq model but needs to be adapted for classification.
+    Tokenizer for prompted T5 classification that reproduces training-time tokenization.
+
+    SentencePiece tokenization depends on context (e.g. "'it" vs "' it"), so
+    tokenizing the prompt and the sentence separately would feed the model
+    slightly different tokens than it was trained on. This wrapper tokenizes
+    the full prompted string jointly, as during fine-tuning, and returns only
+    the tokens that cover the sentence (plus </s>), with offsets relative to
+    the sentence. T5LabelScoringClassifier re-inserts the fixed prompt tokens,
+    so prefix + sentence tokens + suffix equals the joint tokenization.
+
+    All other attributes are delegated to the wrapped tokenizer.
     """
-    
-    def __init__(self, t5_model):
+
+    def __init__(self, tokenizer: Any, template: str):
+        self.tokenizer = tokenizer
+        self.prefix, self.suffix = template.split("{sentence}")
+        # Fixed prompt tokens, taken from a joint tokenization so their boundaries match.
+        self.prefix_ids, _, self.suffix_ids = self._split("sentence")
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self.tokenizer, name)
+
+    def _split(self, sentence: str) -> Tuple[List[int], List[Tuple[int, int]], List[int]]:
+        """Joint-tokenize the prompted sentence; return (prefix ids, sentence ids + offsets, suffix ids)."""
+        full = self.prefix + sentence + self.suffix
+        enc = self.tokenizer(full, add_special_tokens=False, return_offsets_mapping=True)
+        start, end = len(self.prefix), len(self.prefix) + len(sentence)
+        prefix_ids, sentence, suffix_ids = [], [], []
+        for token_id, (a, b) in zip(enc["input_ids"], enc["offset_mapping"]):
+            if b <= start:
+                prefix_ids.append(token_id)
+            elif a >= end:
+                suffix_ids.append(token_id)
+            else:
+                sentence.append((token_id, (max(a, start) - start, min(b, end) - start)))
+        return prefix_ids, sentence, suffix_ids
+
+    def __call__(
+        self,
+        text,
+        return_tensors: Optional[str] = None,
+        padding: bool = False,
+        truncation: bool = False,
+        max_length: Optional[int] = None,
+        return_offsets_mapping: bool = False,
+        add_special_tokens: bool = True,
+        **kwargs,
+    ):
+        single = isinstance(text, str)
+        texts = [text] if single else [str(t) for t in text]
+        all_ids, all_offsets = [], []
+        for t in texts:
+            _, sentence, _ = self._split(t)
+            if truncation and max_length is not None:
+                sentence = sentence[: max_length - 1]
+            ids = [i for i, _ in sentence]
+            offsets = [o for _, o in sentence]
+            if add_special_tokens:
+                ids.append(self.tokenizer.eos_token_id)
+                offsets.append((0, 0))
+            all_ids.append(ids)
+            all_offsets.append(offsets)
+
+        if padding or return_tensors is not None:
+            width = max(len(ids) for ids in all_ids)
+            masks = [[1] * len(ids) + [0] * (width - len(ids)) for ids in all_ids]
+            all_offsets = [o + [(0, 0)] * (width - len(o)) for o in all_offsets]
+            all_ids = [ids + [self.tokenizer.pad_token_id] * (width - len(ids)) for ids in all_ids]
+        else:
+            masks = [[1] * len(ids) for ids in all_ids]
+
+        data = {"input_ids": all_ids, "attention_mask": masks}
+        if return_offsets_mapping:
+            data["offset_mapping"] = all_offsets
+        if single and return_tensors is None:
+            data = {k: v[0] for k, v in data.items()}
+        return BatchEncoding(data, tensor_type=return_tensors)
+
+
+class T5LabelScoringClassifier(torch.nn.Module):
+    """
+    Text classifier backed by a T5 conditional-generation model.
+
+    Classification follows the text-to-text formulation the checkpoint was
+    trained with: the input sentence is wrapped in the task prompt, and each
+    class is scored by the decoder's logit for that class's label word at the
+    first decoding step. Because every label word is a single token, this is
+    exactly the conditional likelihood of each label sequence.
+
+    The prompt is part of the model, not of the input: forward() receives the
+    sentence tokens produced by T5PromptTokenizer (input_ids or inputs_embeds)
+    and inserts the prompt's token embeddings around them. Explainers therefore attribute
+    importance to sentence tokens only, while the prompt stays fixed.
+    """
+
+    def __init__(self, t5_model: Any, tokenizer: "T5PromptTokenizer", task: str = "sst2"):
+        super().__init__()
         self.t5_model = t5_model
         self.config = t5_model.config
-        self.device = next(t5_model.parameters()).device
-        
-    def forward(self, input_ids=None, attention_mask=None, inputs_embeds=None, **kwargs):
-        """
-        Forward pass adapted for classification.
-        """
-        # Handle the case where embeddings are passed directly (for explainers like IntegratedGradients)
-        if inputs_embeds is not None:
-            # For T5, when using input embeddings directly, we need to go through the encoder
-            encoder_outputs = self.t5_model.encoder(
-                inputs_embeds=inputs_embeds,
-                attention_mask=attention_mask
-            )
-            # Use the last encoder hidden state and pool it
-            last_hidden_state = encoder_outputs.last_hidden_state
-            # Mean pooling over sequence length
-            pooled = last_hidden_state.mean(dim=1)  # [batch_size, hidden_size]
-            
-            # Create classification head
-            if not hasattr(self, '_classification_head'):
-                hidden_size = pooled.size(-1)
-                self._classification_head = torch.nn.Linear(hidden_size, 2).to(self.device)
-                torch.nn.init.normal_(self._classification_head.weight, std=0.02)
-                torch.nn.init.zeros_(self._classification_head.bias)
-            
-            logits = self._classification_head(pooled)
-            from types import SimpleNamespace
-            return SimpleNamespace(logits=logits)
-        
-        # Check if input_ids is None
-        if input_ids is None:
-            raise ValueError("Either input_ids or inputs_embeds must be provided for T5ClassificationWrapper")
-        
-        # For T5 classification, we need decoder inputs
-        # Create a simple decoder input (start of sequence token)
-        batch_size = input_ids.size(0)
-        decoder_start_token_id = self.t5_model.config.decoder_start_token_id or 0
-        
-        # Create decoder input ids (just the start token for each sample)
-        decoder_input_ids = torch.full(
-            (batch_size, 1), 
-            decoder_start_token_id, 
-            dtype=torch.long, 
-            device=self.device
-        )
-        
-        # Forward pass with decoder inputs
-        outputs = self.t5_model(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            decoder_input_ids=decoder_input_ids,
-            **kwargs
-        )
-        
-        # For T5, we need to use the decoder's last hidden states
-        # The output is a Seq2SeqLMOutput object with decoder_hidden_states
-        if hasattr(outputs, 'decoder_hidden_states') and outputs.decoder_hidden_states is not None:
-            # Use the last layer's hidden states
-            last_hidden_state = outputs.decoder_hidden_states[-1]
-        else:
-            # Fallback: use the logits and project them through encoder
-            # Get encoder outputs for classification
-            encoder_outputs = self.t5_model.encoder(
-                input_ids=input_ids,
-                attention_mask=attention_mask
-            )
-            # Use the last encoder hidden state and pool it
-            last_hidden_state = encoder_outputs.last_hidden_state
-            # Mean pooling over sequence length
-            pooled = last_hidden_state.mean(dim=1)  # [batch_size, hidden_size]
-            
-            # Create classification head and return early
-            if not hasattr(self, '_classification_head'):
-                hidden_size = pooled.size(-1)
-                self._classification_head = torch.nn.Linear(hidden_size, 2).to(self.device)
-                torch.nn.init.normal_(self._classification_head.weight, std=0.02)
-                torch.nn.init.zeros_(self._classification_head.bias)
-            
-            logits = self._classification_head(pooled)
-            from types import SimpleNamespace
-            return SimpleNamespace(logits=logits)
-        
-        # Take the first token (corresponding to the start token) and project to class logits
-        pooled = last_hidden_state[:, 0, :]  # [batch_size, hidden_size]
-        
-        # Create a simple linear projection to 2 classes (for SST-2)
-        if not hasattr(self, '_classification_head'):
-            hidden_size = pooled.size(-1)
-            self._classification_head = torch.nn.Linear(hidden_size, 2).to(self.device)
-            # Initialize with small random weights
-            torch.nn.init.normal_(self._classification_head.weight, std=0.02)
-            torch.nn.init.zeros_(self._classification_head.bias)
-        
-        logits = self._classification_head(pooled)
-        
-        # Return in the format expected by the rest of the code
-        from types import SimpleNamespace
-        return SimpleNamespace(logits=logits)
-    
-    def __call__(self, *args, **kwargs):
-        return self.forward(*args, **kwargs)
-    
-    def eval(self):
-        self.t5_model.eval()
-        if hasattr(self, '_classification_head'):
-            self._classification_head.eval()
-        return self
-    
-    def train(self, mode=True):
-        self.t5_model.train(mode)
-        if hasattr(self, '_classification_head'):
-            self._classification_head.train(mode)
-        return self
-    
-    def requires_grad_(self, requires_grad=True):
-        self.t5_model.requires_grad_(requires_grad)
-        if hasattr(self, '_classification_head'):
-            self._classification_head.requires_grad_(requires_grad)
-        return self
-    
-    def to(self, device):
-        self.t5_model = self.t5_model.to(device)
-        self.device = device
-        if hasattr(self, '_classification_head'):
-            self._classification_head = self._classification_head.to(device)
-        return self
-        
-    def parameters(self):
-        """Return model parameters as an iterator."""
-        for param in self.t5_model.parameters():
-            yield param
-        if hasattr(self, '_classification_head'):
-            for param in self._classification_head.parameters():
-                yield param
-    
-    def modules(self):
-        """Return model modules as an iterator."""
-        for module in self.t5_model.modules():
-            yield module
-        if hasattr(self, '_classification_head'):
-            yield self._classification_head
-    
-    def named_parameters(self, prefix='', recurse=True):
-        """Return named parameters."""
-        for name, param in self.t5_model.named_parameters(prefix=prefix, recurse=recurse):
-            yield name, param
-        if hasattr(self, '_classification_head'):
-            for name, param in self._classification_head.named_parameters(prefix=f'{prefix}classification_head.' if prefix else 'classification_head.', recurse=recurse):
-                yield name, param
-    
+        template = T5_PROMPT_TEMPLATES[task]
+        self.register_buffer("prefix_ids", torch.tensor(tokenizer.prefix_ids, dtype=torch.long), persistent=False)
+        self.register_buffer("suffix_ids", torch.tensor(tokenizer.suffix_ids, dtype=torch.long), persistent=False)
+        self.eos_token_id = tokenizer.eos_token_id
+
+        label_ids = []
+        for word in template["label_words"]:
+            ids = tokenizer.tokenizer(word, add_special_tokens=False).input_ids
+            if len(ids) != 1:
+                raise ValueError(f"Label word '{word}' must be a single token, got {ids}")
+            label_ids.append(ids[0])
+        self.register_buffer("label_token_ids", torch.tensor(label_ids), persistent=False)
+        self.config.num_labels = len(label_ids)
+        self.config.id2label = dict(enumerate(template["label_words"]))
+        self.config.label2id = {w: i for i, w in self.config.id2label.items()}
+
     @property
-    def __class__(self):
-        # Return the original model class for type checking
-        return self.t5_model.__class__
+    def device(self) -> torch.device:
+        return next(self.t5_model.parameters()).device
+
+    def get_input_embeddings(self) -> torch.nn.Module:
+        return self.t5_model.get_input_embeddings()
+
+    def _wrap_in_prompt(
+        self, embeds: torch.Tensor, attention_mask: Optional[torch.Tensor]
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+        """Build [prefix] + sentence tokens (without </s>) + [suffix] + </s>, per row."""
+        embed = self.get_input_embeddings()
+        prefix = embed(self.prefix_ids)
+        suffix = embed(torch.cat([self.suffix_ids, self.suffix_ids.new_tensor([self.eos_token_id])]))
+        if attention_mask is None:
+            attention_mask = torch.ones(embeds.shape[:2], dtype=torch.long, device=embeds.device)
+
+        rows = []
+        for row_embeds, row_mask in zip(embeds, attention_mask):
+            length = int(row_mask.sum().item())
+            # The tokenizer appends </s> to the sentence; the prompt suffix goes before it.
+            sentence = row_embeds[: length - 1]
+            rows.append(torch.cat([prefix, sentence, suffix], dim=0))
+
+        max_len = max(r.shape[0] for r in rows)
+        out = embeds.new_zeros((len(rows), max_len, embeds.shape[-1]))
+        mask = attention_mask.new_zeros((len(rows), max_len))
+        for i, r in enumerate(rows):
+            out[i, : r.shape[0]] = r
+            mask[i, : r.shape[0]] = 1
+        return out, mask
+
+    def forward(self, input_ids=None, attention_mask=None, inputs_embeds=None, **kwargs):
+        if inputs_embeds is None:
+            if input_ids is None:
+                raise ValueError("Either input_ids or inputs_embeds must be provided")
+            inputs_embeds = self.get_input_embeddings()(input_ids)
+        prompted_embeds, prompted_mask = self._wrap_in_prompt(inputs_embeds, attention_mask)
+
+        decoder_start = self.config.decoder_start_token_id
+        decoder_input_ids = torch.full(
+            (prompted_embeds.shape[0], 1), decoder_start, dtype=torch.long, device=prompted_embeds.device
+        )
+        outputs = self.t5_model(
+            inputs_embeds=prompted_embeds,
+            attention_mask=prompted_mask,
+            decoder_input_ids=decoder_input_ids,
+        )
+        logits = outputs.logits[:, 0, :].index_select(-1, self.label_token_ids)
+        return SequenceClassifierOutput(logits=logits)
 
 
 class ModelLoader:
@@ -237,7 +253,8 @@ class ModelLoader:
             
             # Handle special cases and architectures
             if "t5" in model_name.lower():
-                model = self._load_t5_model(model_name)
+                tokenizer = T5PromptTokenizer(tokenizer, T5_PROMPT_TEMPLATES["sst2"]["input_text"])
+                model = self._load_t5_model(model_name, tokenizer)
             elif custom_model_class is not None:
                 model = custom_model_class.from_pretrained(model_name)
             else:
@@ -296,18 +313,13 @@ class ModelLoader:
             # If all else fails, re-raise the original exception
             raise e
     
-    def _load_t5_model(self, model_name: str) -> Any:
+    def _load_t5_model(self, model_name: str, tokenizer: Any) -> Any:
         """
-        Special handling for T5 models for classification.
-        T5 requires custom setup for classification tasks.
+        Load a T5 conditional-generation checkpoint as a label-scoring classifier.
+        No new parameters are introduced; predictions come from the trained decoder.
         """
-        # Load the T5 conditional generation model
         base_model = T5ForConditionalGeneration.from_pretrained(model_name)
-        
-        # Create a wrapper that handles classification
-        wrapper = T5ClassificationWrapper(base_model)
-        
-        return wrapper
+        return T5LabelScoringClassifier(base_model, tokenizer, task="sst2")
     
     def get_model_info(self, model: Any, tokenizer: Any) -> Dict[str, Any]:
         """
@@ -428,10 +440,9 @@ EXPERIMENT_MODELS = {
         "architecture": "distilbert",
     },
     "experiment_2": {
-        "name": "tanganke/flan-t5-base_glue-sst2",  # Would need fine-tuning for SST-2
-        "description": "T5-small for SST-2 classification",
+        "name": "tanganke/flan-t5-base_glue-sst2",
+        "description": "FLAN-T5-base fine-tuned on SST-2, classifying by conditional generation of the label word",
         "architecture": "t5",
-        "note": "Requires custom fine-tuning setup"
     },
     "experiment_3": {
         "name": "textattack/roberta-base-ag-news",
