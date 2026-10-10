@@ -28,7 +28,8 @@ def _summarize(values: Iterable[float]) -> Dict[str, float]:
     undefined = int(arr.size - defined.size)
     if defined.size == 0:
         return {'mean': float('nan'), 'std': float('nan'), 'n': 0, 'undefined': undefined}
-    return {'mean': float(defined.mean()), 'std': float(defined.std()), 'n': int(defined.size), 'undefined': undefined}
+    std = float(defined.std(ddof=1)) if defined.size > 1 else 0.0
+    return {'mean': float(defined.mean()), 'std': std, 'n': int(defined.size), 'undefined': undefined}
 
 
 def stability_summary(records: List[Dict[str, Any]]) -> Dict[str, Any]:

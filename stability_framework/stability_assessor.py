@@ -456,13 +456,16 @@ class StabilityAssessor:
                     )
                 variant_explanations.append(variant_exp)
             
-            # Calculate stability metrics
-            metrics = []
-            for variant_exp in variant_explanations[1:]:  # Skip first (original)
-                metric_result = self.metrics_calculator.calculate_all_metrics(
-                    original_explanation, variant_exp
-                )
-                metrics.append(metric_result)
+            # Compare the original with every variant that differs from the original
+            # configuration (same text and seed), e.g. all seeds of a custom seed list
+            compared = [
+                i for i, (variant_text, seed) in enumerate(zip(variant_texts, seeds))
+                if not (variant_text == text and seed == explainer.random_seed)
+            ]
+            metrics = [
+                self.metrics_calculator.calculate_all_metrics(original_explanation, variant_explanations[i])
+                for i in compared
+            ]
             
             return {
                 'sample_idx': sample_idx,
@@ -473,6 +476,8 @@ class StabilityAssessor:
                 'original_explanation': original_explanation,
                 'variant_explanations': variant_explanations,
                 'variant_texts': variant_texts,
+                'variant_seeds': seeds,
+                'compared_variant_indices': compared,
                 'metrics': metrics
             }
             
@@ -490,9 +495,16 @@ class StabilityAssessor:
         return {
             'sample_idx': record['sample_idx'],
             'metrics': record['metrics'],
+            'compared_variant_indices': record.get('compared_variant_indices'),
             'original_explanation': slim(record['original_explanation']),
             'variant_explanations': [slim(e) for e in record['variant_explanations']],
         }
+
+    @staticmethod
+    def _compared_indices(record: Dict[str, Any]) -> List[int]:
+        """Indices of the variants compared with the original (older records: all but the first)."""
+        indices = record.get('compared_variant_indices')
+        return list(indices) if indices is not None else list(range(1, len(record['variant_explanations'])))
 
     def _explain_original(self, explainer: Any, text: str) -> Dict[str, Any]:
         """Explain an unperturbed text once per explainer configuration."""
@@ -583,7 +595,8 @@ class StabilityAssessor:
 
         # Flip-rate: prediction stays stable while the explanation changes
         aggregated['flip_rate'] = self.metrics_calculator.flip_rate([
-            {'original': r['original_explanation'], 'variants': r['variant_explanations'][1:]}
+            {'original': r['original_explanation'],
+             'variants': [r['variant_explanations'][i] for i in self._compared_indices(r)]}
             for r in valid_results
         ])
 

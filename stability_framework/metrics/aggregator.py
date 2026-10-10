@@ -90,17 +90,18 @@ class MetricsAggregator:
         """Calculate statistics for a list of values."""
         values_array = np.array(values)
         
+        # Sample standard deviation (ddof=1), consistent with the t interval below
         stats_dict = {
             'mean': np.mean(values_array),
-            'std': np.std(values_array),
+            'std': np.std(values_array, ddof=1) if len(values) > 1 else 0.0,
             'min': np.min(values_array),
             'max': np.max(values_array),
             'median': np.median(values_array),
             'count': len(values)
         }
         
-        # Calculate confidence interval
-        if len(values) > 1:
+        # Calculate confidence interval (degenerate at the mean when values are constant)
+        if len(values) > 1 and np.ptp(values_array) > 0:
             ci = stats.t.interval(
                 self.confidence_level,
                 len(values) - 1,
@@ -109,7 +110,7 @@ class MetricsAggregator:
             )
             stats_dict['ci_95'] = ci
         else:
-            stats_dict['ci_95'] = (values_array[0], values_array[0])
+            stats_dict['ci_95'] = (float(np.mean(values_array)), float(np.mean(values_array)))
         
         return stats_dict
     

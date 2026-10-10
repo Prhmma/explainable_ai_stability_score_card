@@ -39,7 +39,7 @@ class TestWordAlignment:
 
     def test_repeated_words_are_not_overwritten(self):
         keyed = BaseExplainer._key_attributions([("not", 1), ("good", 2), ("not", 3), ("good", 4)])
-        assert keyed == {"not": 1.0, "good": 2.0, "not#2": 3.0, "good#2": 4.0}
+        assert keyed == {"not": 1.0, "good": 2.0, "not #2": 3.0, "good #2": 4.0}
 
     def test_keys_ignore_case_and_edge_punctuation(self):
         original = BaseExplainer._key_attributions([("The", 1), ("Film,", 2)])
@@ -352,3 +352,53 @@ class TestLegacyComponents:
         clone = lime.with_seed(43)
         assert type(clone) is LegacyAlignmentLIME and clone.random_seed == 43 and clone.params["num_samples"] == 300
         assert LegacyConfigIG(42, n_steps=25).with_seed(7).n_steps == 25
+
+
+class TestPreprocessingCoverage:
+
+    def test_all_categories_represented_and_no_malformed_variants(self):
+        from stability_framework.stress_tests import PreprocessingVariationTest
+        t = PreprocessingVariationTest(random_seed=42)
+        text = "it 's a charming and often affecting journey . "  # SST-2 style trailing space
+        out = t.apply(text)
+        assert out[0] == text and len(out) == 1 + t.MAX_VARIANTS and len(set(out)) == len(out)
+        for category in (t._generate_case_variants, t._generate_punctuation_variants, t._generate_spacing_variants):
+            assert any(v in set(category(text)) for v in out[1:])
+        assert not any(v.rstrip().endswith((". .", ". !")) for v in out)
+
+    def test_repeat_keys_cannot_collide_with_literal_words(self):
+        keyed = BaseExplainer._key_attributions([("word", 1), ("word", 2), ("word#2", 3)])
+        assert keyed == {"word": 1.0, "word #2": 2.0, "word#2": 3.0}
+
+
+class TestParaphraseClauses:
+
+    def test_reordering_requires_finite_verbs(self, tmp_path):
+        from stability_framework.stress_tests import SemanticParaphrasingTest
+        t = SemanticParaphrasingTest(cache_dir=str(tmp_path))
+        assert t._generate_reorderings("a moving , beautifully acted film . ") == []
+        assert t._generate_reorderings("the cast is great , the script is weak . ") == ["the script is weak , the cast is great . "]
+
+
+class TestAggregationStatistics:
+
+    def test_sample_sd_and_degenerate_interval(self):
+        from stability_framework.metrics import StabilityMetrics
+        agg = StabilityMetrics().aggregate_metrics([{"x": 0.0}, {"x": 1.0}])
+        assert abs(agg["x"]["std"] - 0.5 ** 0.5) < 1e-12
+        const = StabilityMetrics().aggregate_metrics([{"x": 1.0}, {"x": 1.0}])
+        assert const["x"]["ci_95"] == (1.0, 1.0)
+
+
+@pytest.mark.slow
+class TestCustomSeedLists:
+
+    def test_every_seed_different_from_baseline_is_compared(self, distilbert, tmp_path):
+        from stability_framework.explainers import create_explainer
+        from stability_framework.stability_assessor import StabilityAssessor
+        from stability_framework.stress_tests import create_stress_test
+        a = StabilityAssessor(results_dir=str(tmp_path), device="cpu")
+        a.loaded_model, a.loaded_tokenizer = distilbert
+        r = a._process_sample("a gripping film .", 1, create_explainer("lime", random_seed=42, num_samples=100),
+                              create_stress_test("seed_variation", seeds=[1, 2, 3]), 0)
+        assert r["compared_variant_indices"] == [0, 1, 2] and len(r["metrics"]) == 3

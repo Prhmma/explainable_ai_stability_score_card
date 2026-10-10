@@ -33,7 +33,8 @@ def annotate_strength(records: List[Dict[str, Any]], embed=None) -> List[Dict[st
     """One row per comparison: strength measures, stability metrics and prediction invariance."""
     rows, pairs = [], []
     for r in records:
-        for variant, m in zip(r['variant_texts'][1:], r['metrics']):
+        indices = r.get('compared_variant_indices') or range(1, len(r['variant_texts']))
+        for variant, m in zip([r['variant_texts'][i] for i in indices], r['metrics']):
             rows.append({
                 'edit_fraction': word_edit_fraction(r['original_text'], variant),
                 'jaccard_at_5': m['jaccard_at_5'],

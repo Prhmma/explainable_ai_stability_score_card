@@ -165,16 +165,17 @@ class BaseExplainer(ABC):
         """
         Key word scores by normalized word, keeping repeated words distinct.
 
-        The n-th occurrence of a word is keyed "word#n" (the first is just
+        The n-th occurrence of a word is keyed "word #n" (the first is just
         "word"), so repeated words no longer overwrite each other and the same
         word occurrence matches across preprocessing variants (e.g. "Film" in
-        the original and "FILM" in an uppercased variant).
+        the original and "FILM" in an uppercased variant). Words never contain
+        spaces, so these keys cannot collide with a literal word such as "#2".
         """
         counts: Dict[str, int] = {}
         keyed: Dict[str, float] = {}
         for word, score in word_scores:
             norm = cls._normalize_word(word)
             counts[norm] = counts.get(norm, 0) + 1
-            key = norm if counts[norm] == 1 else f"{norm}#{counts[norm]}"
+            key = norm if counts[norm] == 1 else f"{norm} #{counts[norm]}"
             keyed[key] = float(score)
         return keyed

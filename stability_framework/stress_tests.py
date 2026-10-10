@@ -37,7 +37,7 @@ logger = logging.getLogger(__name__)
 
 
 # Version of the paraphrase generator; part of the paraphrase cache key
-PARAPHRASE_GENERATOR_VERSION = 2
+PARAPHRASE_GENERATOR_VERSION = 3
 
 
 class BaseStressTest(ABC):
@@ -107,31 +107,28 @@ class PreprocessingVariationTest(BaseStressTest):
     def __init__(self, random_seed: int = 42):
         super().__init__("PreprocessingVariation", random_seed)
         
+    MAX_VARIANTS = 7
+
     def apply(self, text: str) -> List[str]:
-        """Generate preprocessing variants of the text."""
-        variants = []
-        
-        # Original text (as reference)
-        variants.append(text)
-        
-        # Case variations
-        variants.extend(self._generate_case_variants(text))
-        
-        # Punctuation variations
-        variants.extend(self._generate_punctuation_variants(text))
-        
-        # Spacing variations
-        variants.extend(self._generate_spacing_variants(text))
-        
-        # Remove duplicates while preserving order
-        seen = set()
-        unique_variants = []
-        for variant in variants:
-            if variant not in seen:
-                seen.add(variant)
-                unique_variants.append(variant)
-                
-        return unique_variants[:8]  # Limit to reasonable number
+        """
+        Generate preprocessing variants of the text: the original first, then up
+        to MAX_VARIANTS variants taken round-robin from the case, punctuation and
+        spacing categories, so that every category is represented (taking them
+        in order let case and punctuation fill every slot).
+        """
+        categories = [
+            self._generate_case_variants(text),
+            self._generate_punctuation_variants(text),
+            self._generate_spacing_variants(text),
+        ]
+        seen = {text}
+        variants = [text]
+        for rank in range(max(len(c) for c in categories)):
+            for category in categories:
+                if rank < len(category) and category[rank] not in seen and category[rank].strip():
+                    seen.add(category[rank])
+                    variants.append(category[rank])
+        return variants[:1 + self.MAX_VARIANTS]
     
     def _rng(self, text: str) -> random.Random:
         """
@@ -199,10 +196,12 @@ class PreprocessingVariationTest(BaseStressTest):
             if old_punct in text:
                 variants.append(text.replace(old_punct, new_punct))
         
-        # Add extra punctuation
-        if not text.endswith(('.', '!', '?')):
-            variants.append(text + '.')
-            variants.append(text + '!')
+        # Add terminal punctuation only where there is none (ignoring trailing
+        # whitespace, which SST-2 sentences carry)
+        body = text.rstrip()
+        if body and not body.endswith(('.', '!', '?')):
+            variants.append(body + '.')
+            variants.append(body + '!')
             
         return variants
     
@@ -248,13 +247,13 @@ class SemanticParaphrasingTest(BaseStressTest):
         os.makedirs(self.cache_dir, exist_ok=True)
         
         # Initialize semantic similarity model if available
-        self.similarity_model = None
-        if SENTENCE_TRANSFORMERS_AVAILABLE:
-            try:
-                self.similarity_model = SentenceTransformer('all-MiniLM-L6-v2')
-                logger.info("Loaded sentence transformer model for similarity filtering")
-            except Exception as e:
-                logger.warning(f"Could not load sentence transformer: {e}")
+        # Paraphrases are only valid if their similarity to the original is
+        # verified, so the test fails closed when the model is unavailable
+        # (previously unvalidated paraphrases were used, and cached).
+        if not SENTENCE_TRANSFORMERS_AVAILABLE:
+            raise RuntimeError("Semantic paraphrasing requires sentence-transformers for similarity validation")
+        self.similarity_model = SentenceTransformer('all-MiniLM-L6-v2')
+        logger.info("Loaded sentence transformer model for similarity filtering")
         
         # Initialize NLTK wordnet if available
         if NLTK_AVAILABLE:
@@ -350,8 +349,7 @@ class SemanticParaphrasingTest(BaseStressTest):
             self._generate_reorderings(text),
             self._generate_simple_transformations(text),
         ]
-        if self.similarity_model is not None:
-            categories = [self._filter_by_similarity(text, c) if c else c for c in categories]
+        categories = [self._filter_by_similarity(text, c) if c else c for c in categories]
 
         # Take variants round-robin across categories so that every category
         # is represented, rather than the first category filling every slot
@@ -417,6 +415,13 @@ class SemanticParaphrasingTest(BaseStressTest):
         return variants
 
     @staticmethod
+    def _has_finite_verb(phrase: str) -> bool:
+        """Whether a phrase contains a finite verb (VBZ, VBP, VBD) or modal (MD)."""
+        if not NLTK_AVAILABLE:
+            return False
+        return any(tag in ('VBZ', 'VBP', 'VBD', 'MD') for _, tag in nltk.pos_tag(phrase.split()))
+
+    @staticmethod
     def _wordnet_pos(treebank_tag: str) -> Optional[str]:
         """Map a Penn Treebank tag to a WordNet POS (content words only)."""
         if treebank_tag.startswith('NN'):
@@ -456,9 +461,11 @@ class SemanticParaphrasingTest(BaseStressTest):
         """
         Swap two clauses joined by a comma or "and" ("A , B" -> "B , A").
 
-        Clauses starting with a subordinating or contrastive word ("but",
-        "because", ...) are not moved, since swapping them changes meaning.
-        Word-level shuffles, which break grammaticality, are not generated.
+        Both parts must contain a finite verb (so phrases such as "a moving,
+        beautifully acted film" are not treated as clauses), and clauses
+        starting with a subordinating or contrastive word ("but", "because",
+        ...) are not moved, since swapping them changes meaning. Word-level
+        shuffles, which break grammaticality, are not generated.
         """
         variants = []
         body = text.rstrip()
@@ -471,7 +478,7 @@ class SemanticParaphrasingTest(BaseStressTest):
 
         for joiner in (" , ", ", ", " and "):
             parts = body.split(joiner)
-            if len(parts) == 2 and all(len(p.split()) >= 2 for p in parts):
+            if len(parts) == 2 and all(len(p.split()) >= 2 and self._has_finite_verb(p) for p in parts):
                 first, second = parts[0].strip(), parts[1].strip()
                 if second.split()[0].lower() in {"but", "yet", "so", "because", "although", "though", "while"}:
                     continue
@@ -508,31 +515,14 @@ class SemanticParaphrasingTest(BaseStressTest):
         return variants
     
     def _filter_by_similarity(self, original: str, variants: List[str]) -> List[str]:
-        """Filter variants by semantic similarity to original."""
-        if not self.similarity_model:
-            return variants
-            
-        try:
-            # Calculate embeddings
-            original_embedding = self.similarity_model.encode([original])
-            variant_embeddings = self.similarity_model.encode(variants)
-            
-            # Calculate similarities
-            from sklearn.metrics.pairwise import cosine_similarity
-            similarities = cosine_similarity(original_embedding, variant_embeddings)[0]
-            
-            # Filter by threshold
-            filtered_variants = []
-            for variant, similarity in zip(variants, similarities):
-                if similarity >= self.similarity_threshold or variant == original:
-                    filtered_variants.append(variant)
-                    
-            logger.debug(f"Filtered {len(variants)} to {len(filtered_variants)} variants by similarity")
-            return filtered_variants
-            
-        except Exception as e:
-            logger.warning(f"Error in similarity filtering: {e}")
-            return variants
+        """Keep variants whose cosine similarity to the original meets the threshold (errors propagate)."""
+        from sklearn.metrics.pairwise import cosine_similarity
+        original_embedding = self.similarity_model.encode([original])
+        variant_embeddings = self.similarity_model.encode(variants)
+        similarities = cosine_similarity(original_embedding, variant_embeddings)[0]
+        filtered_variants = [v for v, sim in zip(variants, similarities) if sim >= self.similarity_threshold or v == original]
+        logger.debug(f"Filtered {len(variants)} to {len(filtered_variants)} variants by similarity")
+        return filtered_variants
 
 
 # Factory function for creating stress tests
