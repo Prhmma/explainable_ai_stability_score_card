@@ -309,7 +309,15 @@ class TestPreprocessingDeterminism:
 
 @pytest.mark.slow
 class TestAppleGpuParity:
-    """Unpadded MPS batches gave wrong outputs on some inputs; padded MPS must match the CPU."""
+    """SDPA attention on MPS gave wrong outputs for some inputs; MPS must match the CPU."""
+
+    def test_mps_models_use_eager_attention(self):
+        import torch
+        if not torch.backends.mps.is_available():
+            pytest.skip("MPS not available")
+        from stability_framework.model_loader import ModelLoader
+        model, _ = ModelLoader(device="mps").load_model_and_tokenizer("distilbert-base-uncased-finetuned-sst-2-english")
+        assert model.config._attn_implementation == "eager"
 
     def test_mps_matches_cpu_for_all_explainers(self):
         import torch

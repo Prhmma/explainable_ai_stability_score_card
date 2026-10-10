@@ -175,9 +175,9 @@ class T5LabelScoringClassifier(torch.nn.Module):
             sentence = row_embeds[: length - 1]
             rows.append(torch.cat([prefix, sentence, suffix], dim=0))
 
-        # Pad to a multiple of 64 (masked) to keep the number of distinct shapes small on MPS
+        # Pad to a multiple of 16 (masked) to keep the number of distinct shapes small on MPS
         max_len = max(r.shape[0] for r in rows)
-        max_len = -(-max_len // 64) * 64
+        max_len = -(-max_len // 16) * 16
         out = embeds.new_zeros((len(rows), max_len, embeds.shape[-1]))
         mask = attention_mask.new_zeros((len(rows), max_len))
         for i, r in enumerate(rows):
@@ -257,14 +257,19 @@ class ModelLoader:
             # Load tokenizer first, with special handling for LoRA/fine-tuned models
             tokenizer = self._load_tokenizer(model_name)
             
+            # PyTorch's fused SDPA attention on Apple Silicon (MPS) gives wrong
+            # outputs for some inputs (in one test, a different predicted class
+            # than the CPU for 1 of 60 SST-2 texts); eager attention matches the CPU.
+            attn_kwargs = {'attn_implementation': 'eager'} if self.device == 'mps' else {}
+
             # Handle special cases and architectures
             if "t5" in model_name.lower():
                 tokenizer = T5PromptTokenizer(tokenizer, T5_PROMPT_TEMPLATES["sst2"]["input_text"])
                 model = self._load_t5_model(model_name, tokenizer)
             elif custom_model_class is not None:
-                model = custom_model_class.from_pretrained(model_name)
+                model = custom_model_class.from_pretrained(model_name, **attn_kwargs)
             else:
-                model = AutoModelForSequenceClassification.from_pretrained(model_name)
+                model = AutoModelForSequenceClassification.from_pretrained(model_name, **attn_kwargs)
             
             # Move to device and set eval mode
             model = model.to(self.device)

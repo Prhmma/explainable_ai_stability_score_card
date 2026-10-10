@@ -23,7 +23,7 @@ class IntegratedGradientsExplainer(BaseExplainer):
     
     # Interpolation steps x (padded) sequence length per forward/backward batch.
     # Bounds activation memory on long inputs (all 50 steps of a long AG News
-    # input took up to 14.7 GB); inputs padded to 64 tokens still run all 50
+    # input took up to 14.7 GB); inputs of up to 64 tokens still run all 50
     # steps in one batch.
     TOKEN_BUDGET = 3200
 
