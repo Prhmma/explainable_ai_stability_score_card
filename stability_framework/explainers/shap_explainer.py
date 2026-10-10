@@ -33,16 +33,24 @@ class SHAPExplainer(BaseExplainer):
         
         # Extract attributions for target class
         attributions = shap_values.values[0, :, target] if len(shap_values.values.shape) > 2 else shap_values.values[0, :]
-        # The Text masker's tokens concatenate back to the input text, so their
-        # character spans follow from cumulative lengths.
+        # Locate each Text-masker token in the input, in order. Tokens are slices
+        # of the input, but SHAP may drop leading/trailing whitespace, so match
+        # on each token's non-whitespace content rather than on cumulative lengths.
         tokens = [str(t) for t in shap_values.data[0]]
-        if "".join(tokens) != text:
-            raise ValueError("SHAP tokens do not reconstruct the input text; cannot align to words")
         offsets, pos = [], 0
         for token in tokens:
-            offsets.append((pos, pos + len(token)))
-            pos += len(token)
-        words = self._aggregate_to_words(text, offsets, attributions.tolist())
+            content = token.strip()
+            if not content:
+                # Empty strings are special tokens; whitespace tokens sit at the current position
+                offsets.append((pos, pos))
+                continue
+            start = text.find(content, pos)
+            if start < 0:
+                raise ValueError(f"SHAP token {token!r} not found in input text; cannot align to words")
+            offsets.append((start, start + len(content)))
+            pos = start + len(content)
+        special = [token == "" for token in tokens]
+        words = self._aggregate_to_words(text, offsets, attributions.tolist(), special)
         word_attributions = self._key_attributions(words)
         
         return {

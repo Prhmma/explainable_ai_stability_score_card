@@ -91,7 +91,9 @@ class IntegratedGradientsExplainer(BaseExplainer):
         tokens = tokenizer.convert_ids_to_tokens(input_ids)
         
         # Aggregate to word level
-        words = self._aggregate_to_words(text, offsets, attr_scores.tolist())
+        special_ids = set(tokenizer.all_special_ids)
+        special = [token_id in special_ids for token_id in input_ids]
+        words = self._aggregate_to_words(text, offsets, attr_scores.tolist(), special)
         word_attributions = self._key_attributions(words)
 
         return {

@@ -91,7 +91,8 @@ class BaseExplainer(ABC):
     def _aggregate_to_words(
         text: str,
         offsets: List[Tuple[int, int]],
-        scores: List[float]
+        scores: List[float],
+        special: Optional[List[bool]] = None
     ) -> List[Tuple[str, float]]:
         """
         Aggregate token-level scores to the whitespace-delimited words of `text`.
@@ -100,8 +101,10 @@ class BaseExplainer(ABC):
         different tokenizers (WordPiece, BPE, SentencePiece) and methods are
         comparable. Each token is assigned to the word containing the start of
         its character span; a token that starts on whitespace (e.g. a
-        SentencePiece word-start marker) belongs to the following word.
-        Zero-width tokens (special tokens) are skipped.
+        SentencePiece word-start marker) belongs to the following word, or to
+        the last word if no word follows. Tokens flagged in `special`
+        (e.g. [CLS], </s>) are skipped; whitespace-only tokens may have
+        zero-width offsets and are still placed by their start position.
 
         Returns:
             Ordered list of (word, summed score), one entry per word occurrence.
@@ -113,14 +116,16 @@ class BaseExplainer(ABC):
         totals = [0.0] * len(spans)
         covered = [False] * len(spans)
 
-        for (a, b), score in zip(offsets, scores):
-            if b <= a:
+        if special is None:
+            special = [False] * len(offsets)
+        for (a, b), score, is_special in zip(offsets, scores, special):
+            if is_special:
                 continue
             idx = bisect.bisect_right(starts, a) - 1
             if idx < 0 or a >= spans[idx][1]:
                 idx += 1
-            if idx >= len(spans):
-                continue
+            # Trailing whitespace after the last word: keep its score with that word
+            idx = min(idx, len(spans) - 1)
             totals[idx] += float(score)
             covered[idx] = True
 
