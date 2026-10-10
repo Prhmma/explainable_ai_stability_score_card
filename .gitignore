@@ -50,9 +50,6 @@ venv.bak/
 .env
 .python-version
 
-# UV specific
-uv.lock
-
 # ==========================================
 # TESTING / COVERAGE
 # ==========================================

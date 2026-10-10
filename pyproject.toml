@@ -3,7 +3,7 @@ name = "stability-framework"
 version = "1.0.0"
 description = "A comprehensive tool for evaluating the stability of explanation methods in text classification models"
 readme = "README.md"
-requires-python = ">=3.12"
+requires-python = ">=3.12,<3.14"
 authors = [
     { name = "Academic Research Team" }
 ]
@@ -57,6 +57,11 @@ dev = [
     "black>=23.0.0",
     "mypy>=1.0.0",
 ]
+
+[tool.uv]
+# Resolve dependencies as they existed when the paper's experiments were run,
+# so that `uv sync` reproduces the same library versions. See uv.lock.
+exclude-newer = "2025-09-30T00:00:00Z"
 
 [build-system]
 requires = ["hatchling"]
