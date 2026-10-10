@@ -8,6 +8,7 @@ dataset processing, explanation generation, stress testing, and metric calculati
 import os
 import json
 import time
+import hashlib
 import logging
 from datetime import datetime
 from typing import Dict, List, Any, Optional, Tuple
@@ -70,6 +71,9 @@ class StabilityAssessor:
         self.dataset_loader = DatasetLoader(random_seed=random_seed)
         self.metrics_calculator = StabilityMetrics()
         
+        # Explanations of unperturbed texts, reused across stress tests (cleared per explainer)
+        self._original_explanation_cache: Dict[Tuple[str, str], Dict[str, Any]] = {}
+
         # State tracking
         self.current_experiment = None
         self.loaded_model = None
@@ -152,8 +156,11 @@ class StabilityAssessor:
             
             # Step 4: Run stability assessment
             logger.info("Step 4: Running stability assessment")
+            run_fingerprint = self._run_fingerprint(
+                model_name, dataset_config, texts, explainer_params, stress_test_params
+            )
             assessment_results = self._run_stability_assessment(
-                texts, labels, explainers, stress_tests, experiment_name
+                texts, labels, explainers, stress_tests, experiment_name, run_fingerprint
             )
             
             # Step 5: Compile final results
@@ -174,7 +181,8 @@ class StabilityAssessor:
                     'max_samples': self.max_samples,
                     'correct_predictions_only': self.correct_predictions_only,
                     'explainer_params': explainer_params,
-                    'stress_test_params': stress_test_params
+                    'stress_test_params': stress_test_params,
+                    'run_fingerprint': run_fingerprint
                 },
                 'results': assessment_results
             }
@@ -297,15 +305,28 @@ class StabilityAssessor:
         labels: List[int], 
         explainers: List[Any],
         stress_tests: List[Any],
-        experiment_name: str
+        experiment_name: str,
+        run_fingerprint: str = "unversioned"
     ) -> Dict[str, Any]:
-        """Run the main stability assessment."""
+        """
+        Run the main stability assessment.
+
+        Every completed instance is appended to a JSONL file under
+        <results_dir>/per_instance/<experiment>_<fingerprint>/, one file per
+        explainer and stress test. These files hold the per-instance
+        explanations and metrics, and let an interrupted run resume: instances
+        already recorded for the same configuration fingerprint are loaded
+        instead of recomputed.
+        """
         results = {
             'by_explainer': {},
             'by_stress_test': {},
             'summary': {},
-            'individual_results': []
+            'per_instance_dir': None
         }
+        instance_dir = os.path.join(self.results_dir, 'per_instance', f"{experiment_name}_{run_fingerprint}")
+        os.makedirs(instance_dir, exist_ok=True)
+        results['per_instance_dir'] = instance_dir
         
         total_combinations = len(explainers) * len(stress_tests) * len(texts)
         logger.info(f"Processing {total_combinations} combinations...")
@@ -314,6 +335,7 @@ class StabilityAssessor:
         for explainer in explainers:
             explainer_name = explainer.name
             results['by_explainer'][explainer_name] = {}
+            self._original_explanation_cache.clear()
             
             # Process each stress test
             for stress_test in stress_tests:
@@ -326,7 +348,11 @@ class StabilityAssessor:
                 
                 logger.info(f"Running {explainer_name} with {stress_test_name}")
                 
-                # Process samples
+                # Resume from instances already completed for this configuration
+                instance_file = os.path.join(instance_dir, f"{explainer_name}_{stress_test_name}.jsonl")
+                completed = self._load_completed_instances(instance_file)
+                if completed:
+                    logger.info(f"Resuming: {len(completed)}/{len(texts)} instances already completed")
                 sample_results = []
                 
                 # Create progress bar
@@ -337,11 +363,16 @@ class StabilityAssessor:
                 )
                 
                 for sample_idx, text in pbar:
+                    if sample_idx in completed:
+                        sample_results.append(completed[sample_idx])
+                        continue
                     try:
                         sample_result = self._process_sample(
                             text, labels[sample_idx], explainer, stress_test, sample_idx
                         )
                         sample_results.append(sample_result)
+                        if sample_result is not None:
+                            self._append_instance(instance_file, sample_result)
                         
                         # Update progress bar with current metrics
                         if sample_result and 'metrics' in sample_result:
@@ -390,10 +421,8 @@ class StabilityAssessor:
     ) -> Optional[Dict[str, Any]]:
         """Process a single text sample through the stability assessment."""
         try:
-            # Generate original explanation
-            original_explanation = explainer.explain(
-                self.loaded_model, self.loaded_tokenizer, text
-            )
+            # Explanation of the unperturbed text (reused across stress tests)
+            original_explanation = self._explain_original(explainer, text)
             
             # Apply stress test to generate variants
             if stress_test.name == 'SeedVariation':
@@ -407,6 +436,11 @@ class StabilityAssessor:
             # Generate explanations for variants
             variant_explanations = []
             for i, (variant_text, seed) in enumerate(zip(variant_texts, seeds)):
+                if variant_text == text and seed == explainer.random_seed:
+                    # The reference variant is the original itself; explainers are
+                    # deterministic given (text, seed), so reuse its explanation
+                    variant_explanations.append(original_explanation)
+                    continue
                 if stress_test.name == 'SeedVariation':
                     # Same explainer and parameters, different seed
                     variant_explainer = create_explainer(
@@ -448,6 +482,65 @@ class StabilityAssessor:
             logger.error(f"Error in _process_sample for sample {sample_idx}: {str(e)}")
             return None
     
+    def _explain_original(self, explainer: Any, text: str) -> Dict[str, Any]:
+        """Explain an unperturbed text once per explainer configuration."""
+        key = (json.dumps([explainer.name, explainer.random_seed, explainer.get_params()], sort_keys=True), text)
+        if key not in self._original_explanation_cache:
+            self._original_explanation_cache[key] = explainer.explain(
+                self.loaded_model, self.loaded_tokenizer, text
+            )
+        return self._original_explanation_cache[key]
+
+    def _run_fingerprint(
+        self,
+        model_name: str,
+        dataset_config: Dict[str, Any],
+        texts: List[str],
+        explainer_params: Optional[Dict[str, Any]],
+        stress_test_params: Optional[Dict[str, Any]]
+    ) -> str:
+        """Short hash of everything that determines per-instance results."""
+        from .stress_tests import PARAPHRASE_GENERATOR_VERSION
+        from . import __version__
+        payload = json.dumps({
+            'model': model_name,
+            'dataset': dataset_config,
+            'texts': hashlib.sha256('\x1e'.join(texts).encode()).hexdigest(),
+            'explainer_params': explainer_params,
+            'stress_test_params': stress_test_params,
+            'seed': self.random_seed,
+            'correct_only': self.correct_predictions_only,
+            'paraphrase_generator': PARAPHRASE_GENERATOR_VERSION,
+            'framework': __version__
+        }, sort_keys=True, default=str)
+        return hashlib.sha256(payload.encode()).hexdigest()[:12]
+
+    def _append_instance(self, path: str, sample_result: Dict[str, Any]) -> None:
+        with open(path, 'a', encoding='utf-8') as f:
+            f.write(json.dumps(self._make_serializable(sample_result), ensure_ascii=False) + '\n')
+
+    @staticmethod
+    def _load_completed_instances(path: str) -> Dict[int, Dict[str, Any]]:
+        """Load completed instances, ignoring a truncated final line from an interrupted write."""
+        completed: Dict[int, Dict[str, Any]] = {}
+        if not os.path.exists(path):
+            return completed
+        valid_lines, corrupt = [], False
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                try:
+                    record = json.loads(line)
+                except json.JSONDecodeError:
+                    corrupt = True
+                    continue
+                completed[record['sample_idx']] = record
+                valid_lines.append(line if line.endswith('\n') else line + '\n')
+        if corrupt:
+            # Rewrite without the damaged line so later appends start on a clean line
+            with open(path, 'w', encoding='utf-8') as f:
+                f.writelines(valid_lines)
+        return completed
+
     def _aggregate_sample_results(self, sample_results: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Aggregate results across multiple samples."""
         if not sample_results:

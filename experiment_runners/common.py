@@ -47,7 +47,7 @@ def run_experiment(
     parser = argparse.ArgumentParser(description=title)
     parser.add_argument('--max-samples', type=int, default=None,
                         help='Evaluate at most this many (correctly classified) instances, e.g. for a smoke test')
-    parser.add_argument('--device', default=None, help="'cuda' or 'cpu' (default: CUDA if available)")
+    parser.add_argument('--device', default=None, help="'cuda', 'mps' or 'cpu' (default: CUDA, then MPS, then CPU)")
     parser.add_argument('--results-dir', type=Path, default=DEFAULT_RESULTS_DIR,
                         help=f'Output directory (default: {DEFAULT_RESULTS_DIR})')
     args = parser.parse_args(argv)

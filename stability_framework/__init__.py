@@ -13,5 +13,5 @@ from .stress_tests import SeedVariationTest, PreprocessingVariationTest, Semanti
 from .metrics import StabilityMetrics
 from .stability_assessor import StabilityAssessor
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"
 __author__ = "Academic Research Team"

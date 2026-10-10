@@ -222,13 +222,14 @@ class ModelLoader:
             return device
         
         if torch.cuda.is_available():
-            # Check GPU memory for RTX 3070 constraints
             gpu_memory = torch.cuda.get_device_properties(0).total_memory / 1e9
             logger.info(f"GPU memory available: {gpu_memory:.1f} GB")
             return "cuda"
-        else:
-            logger.warning("CUDA not available, using CPU")
-            return "cpu"
+        if torch.backends.mps.is_available():
+            logger.info("Using Apple Silicon GPU (MPS)")
+            return "mps"
+        logger.warning("No GPU available, using CPU")
+        return "cpu"
     
     def load_model_and_tokenizer(
         self, 

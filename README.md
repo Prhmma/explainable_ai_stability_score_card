@@ -73,17 +73,18 @@ uv run python experiment_runners/experiment_1_distilbert_sst2.py
 Options:
 
 - `--max-samples N` assesses at most N (correctly classified) instances, useful as a smoke test.
-- `--device cuda|cpu` selects the device (default: CUDA if available, otherwise CPU).
+- `--device cuda|mps|cpu` selects the device (default: CUDA, then Apple Silicon MPS, then CPU).
 - `--results-dir PATH` sets the output directory (default: `results/` in the repository).
 
 Each run writes to `results/`:
 
-- `<experiment>_<timestamp>.json`: full results, configuration, dataset filter summary and per-instance explanations
+- `<experiment>_<timestamp>.json`: aggregated results, configuration and dataset filter summary
 - `<experiment>_stability_card.md`: the stability card
-- `<experiment>_..._intermediate.json`: results saved after each explainer × stress-test combination
+- `per_instance/<experiment>_<fingerprint>/<explainer>_<stress test>.jsonl`: one line per instance with the original and perturbed texts, their explanations and the pairwise metrics
+- `<experiment>_..._intermediate.json`: aggregated results saved after each explainer × stress-test combination
 - `<experiment>.log`
 
-Full runs take hours on a GPU. LIME (1000 samples per explanation) dominates the cost, especially for T5.
+Runs are resumable: rerunning the same command skips instances already recorded under the same configuration fingerprint, which covers the model, data, parameters and framework version. Full runs take hours; LIME (1000 samples per explanation) dominates the cost, especially for T5. On an Apple M5 Pro (MPS) the four experiments take roughly 55 hours in total.
 
 ## Assessment Protocol
 
