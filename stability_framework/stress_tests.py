@@ -252,15 +252,22 @@ class SemanticParaphrasingTest(BaseStressTest):
         # (previously unvalidated paraphrases were used, and cached).
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
             raise RuntimeError("Semantic paraphrasing requires sentence-transformers for similarity validation")
-        self.similarity_model = SentenceTransformer('all-MiniLM-L6-v2')
+        # On CPU: on Apple Silicon (MPS) its default SDPA attention can give wrong
+        # outputs, and variable-length batches grew memory without bound
+        self.similarity_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
         logger.info("Loaded sentence transformer model for similarity filtering")
         
         # Initialize NLTK wordnet if available
         if NLTK_AVAILABLE:
             try:
-                for resource in ('wordnet', 'averaged_perceptron_tagger',
-                                 'averaged_perceptron_tagger_eng', 'stopwords'):
-                    nltk.download(resource, quiet=True)
+                # Download only what is missing (a network call each time slowed every start-up)
+                for resource, path in (('wordnet', 'corpora/wordnet'),
+                                       ('averaged_perceptron_tagger_eng', 'taggers/averaged_perceptron_tagger_eng'),
+                                       ('stopwords', 'corpora/stopwords')):
+                    try:
+                        nltk.data.find(path)
+                    except LookupError:
+                        nltk.download(resource, quiet=True)
                 logger.info("NLTK wordnet initialized")
             except Exception as e:
                 logger.warning(f"Could not initialize NLTK: {e}")
