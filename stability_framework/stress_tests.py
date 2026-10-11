@@ -325,8 +325,11 @@ class SemanticParaphrasingTest(BaseStressTest):
                 'cache_version': '1.0'
             }
             
-            with open(cache_file, 'w', encoding='utf-8') as f:
+            # Write atomically: concurrent runs share the cache and must never read a partial file
+            tmp_file = f"{cache_file}.{os.getpid()}.tmp"
+            with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(cache_data, f, indent=2, ensure_ascii=False)
+            os.replace(tmp_file, cache_file)
                 
             logger.debug(f"Saved paraphrases to cache: {cache_key}")
             
