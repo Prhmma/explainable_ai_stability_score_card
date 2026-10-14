@@ -65,8 +65,12 @@ def _variants(tokens: List[str], order: np.ndarray) -> List[str]:
 
 
 def faithfulness(records: List[Dict[str, Any]], predict: Callable[[List[str]], np.ndarray],
-                 random_draws: int = 3, seed: int = 0) -> Dict[str, Dict[str, float]]:
-    """AOPC comprehensiveness and sufficiency for explanations vs. random rankings."""
+                 random_draws: int = 3, seed: int = 0, per_instance: bool = False) -> Dict[str, Any]:
+    """
+    AOPC comprehensiveness and sufficiency for explanations vs. random rankings.
+
+    With per_instance, also returns the explainer's scores by sample_idx.
+    """
     rng = np.random.RandomState(seed)
     plans = []  # (instance index, kind, texts)
     for i, r in enumerate(records):
@@ -95,7 +99,12 @@ def faithfulness(records: List[Dict[str, Any]], predict: Callable[[List[str]], n
         acc[kind]['comprehensiveness'].append(float(np.mean(p_full - p[0::2])))
         acc[kind]['sufficiency'].append(float(np.mean(p_full - p[1::2])))
 
-    return {
+    result = {
         kind: {metric: float(np.mean(values)) for metric, values in parts.items()} | {'n': len(parts['sufficiency'])}
         for kind, parts in acc.items()
     }
+    if per_instance:
+        explained = [records[i]['sample_idx'] for i, kind, _ in plans if kind == 'explainer']
+        result['per_instance'] = {
+            metric: dict(zip(explained, acc['explainer'][metric])) for metric in ('comprehensiveness', 'sufficiency')}
+    return result

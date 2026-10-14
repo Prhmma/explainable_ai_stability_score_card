@@ -106,3 +106,17 @@ def test_measurement_cluster_interval_is_wider_for_correlated_comparisons():
     s = interval_summary(groups, np.random.default_rng(0))
     assert s['cluster_ci_half_width'] > 2 * s['naive_ci_half_width']
     assert abs(s['comparison_mean'] - s['instance_mean']) < 1e-12
+
+
+def test_instance_factors_margin_and_partial_correlation():
+    from analysis.instance_factors import _partial, _spearman, instance_table
+    attrs = {f"w{i}": v for i, v in enumerate([1.0, 0.9, 0.8, 0.7, 0.6, 0.2])}
+    row = {"sample_idx": 3, "original_text": "a b c d e f",
+           "original_explanation": {"attributions": attrs, "confidence": 0.9},
+           "metrics": [{"jaccard_at_5": 0.5, "spearman_correlation": 0.4}, {"jaccard_at_5": 1.0, "spearman_correlation": 0.8}]}
+    t = instance_table([row])[3]
+    assert abs(t["top5_margin"] - 0.4) < 1e-12 and t["jaccard_at_5"] == 0.75 and t["length"] == 6
+    rng = np.random.default_rng(0)
+    z = rng.random(500)
+    x, y = z + 0.1 * rng.random(500), z + 0.1 * rng.random(500)   # related only through z
+    assert _spearman(x, y) > 0.8 and abs(_partial(x, y, z)) < 0.2
