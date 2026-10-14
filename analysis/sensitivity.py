@@ -78,6 +78,14 @@ def shared_random_stream(texts: List[str], seed: int = 42, n_explainers: int = 3
         def _rng(self, text):
             return random  # the module-level stream, as released
 
+        def apply(self, text):
+            # Released selection: categories in order, first 8 unique. It keeps the
+            # random case variant; the current round-robin selection never reaches
+            # the random variants, so under it the stream would have no effect.
+            variants = [text] + self._generate_case_variants(text) + \
+                self._generate_punctuation_variants(text) + self._generate_spacing_variants(text)
+            return list(dict.fromkeys(variants))[:8]
+
     test = GlobalStream(random_seed=seed)
     random.seed(seed)
     passes = [[tuple(test.apply(t)) for t in texts] for _ in range(n_explainers)]
