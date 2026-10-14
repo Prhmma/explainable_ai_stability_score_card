@@ -78,3 +78,31 @@ def test_shared_random_stream_detects_differing_variants():
     texts = [f"the film number {i} is good and long and slow ." for i in range(30)]
     s = shared_random_stream(texts)
     assert s["instances"] == 30 and 0 < s["instances_with_differing_variants"] <= 30
+
+
+def test_measurement_levenshtein_matches_reference():
+    from analysis.measurement import levenshtein
+    from analysis.strength import word_edit_fraction
+    rng = np.random.default_rng(1)
+    for _ in range(50):
+        a, b = rng.integers(0, 4, rng.integers(0, 9)).tolist(), rng.integers(0, 4, rng.integers(0, 9)).tolist()
+        reference = word_edit_fraction(" ".join(map(str, a)), " ".join(map(str, b))) * len(a) if a else len(b)
+        assert levenshtein(a, b) == round(reference)
+
+
+def test_measurement_signed_jaccard_and_union_ad():
+    from analysis.measurement import ad_union, jaccard_at_k
+    a = {"good": 1.0, "bad": -0.9, "film": 0.1}
+    b = {"good": 1.0, "bad": 0.9, "film": 0.1}
+    assert jaccard_at_k(a, b, k=1) == 1.0
+    assert jaccard_at_k(a, b, k=2, signed=True) == 1 / 3   # {good, film} vs {good, bad}
+    assert ad_union({"x": 1.0}, {"y": 1.0}) == 100.0           # nothing shared: maximal difference
+
+
+def test_measurement_cluster_interval_is_wider_for_correlated_comparisons():
+    from analysis.measurement import interval_summary
+    rng = np.random.default_rng(0)
+    groups = [np.full(7, v) for v in rng.random(100)]          # identical comparisons within an instance
+    s = interval_summary(groups, np.random.default_rng(0))
+    assert s['cluster_ci_half_width'] > 2 * s['naive_ci_half_width']
+    assert abs(s['comparison_mean'] - s['instance_mean']) < 1e-12
