@@ -137,3 +137,26 @@ def test_faithfulness_replacement_keeps_length():
     texts = _variants("a b c d e f g h i j".split(), np.arange(10), replacement="[MASK]")
     assert all(len(t.split()) == 10 for t in texts)
     assert texts[0].startswith("[MASK] b c") and texts[1].startswith("a [MASK]")
+
+
+def test_target_class_summary_replaces_only_changed_comparisons(tmp_path, monkeypatch):
+    import json as _json
+    import analysis.target_class as tc
+    monkeypatch.setattr(tc, "REPO_ROOT", tmp_path)
+    m = lambda j, rho, same: {"jaccard_at_5": j, "spearman_correlation": rho,
+                              "attr_diff_relative_difference_percentage": 10.0,
+                              "comparison_info": {"same_prediction": same}}
+    records = {("SHAP", "SemanticParaphrasing"): [
+        {"sample_idx": 0, "compared_variant_indices": [1, 2], "variant_explanations": [{}, {}, {}],
+         "metrics": [m(1.0, 0.9, True), m(0.5, -0.8, False)]}]}
+    out = tmp_path / "results" / "target_class" / "experiment_1"
+    out.mkdir(parents=True)
+    (out / "SHAP_SemanticParaphrasing.jsonl").write_text(_json.dumps({
+        "sample_idx": 0, "variant_idx": 2,
+        "own_target": {"jaccard_at_5": 0.5, "spearman_correlation": -0.8, "attr_diff_relative_difference_percentage": 10.0},
+        "original_target": {"jaccard_at_5": 0.5, "spearman_correlation": 0.8, "attr_diff_relative_difference_percentage": 5.0}}) + "\n")
+    b = tc.summarise("experiment_1", records)["combinations"]["SHAP/SemanticParaphrasing"]
+    assert b["n_changed"] == 1 and b["missing"] == 0
+    assert abs(b["spearman_correlation"]["all_own_target"] - 0.05) < 1e-12
+    assert abs(b["spearman_correlation"]["all_original_target"] - 0.85) < 1e-12
+    assert b["negative_rho_share_changed_original"] == 0.0
