@@ -120,3 +120,20 @@ def test_instance_factors_margin_and_partial_correlation():
     z = rng.random(500)
     x, y = z + 0.1 * rng.random(500), z + 0.1 * rng.random(500)   # related only through z
     assert _spearman(x, y) > 0.8 and abs(_partial(x, y, z)) < 0.2
+
+
+def test_rbo_ext_bounds_and_order_sensitivity():
+    from analysis.robustness import rbo_ext
+    a = list("abcdefgh")
+    assert abs(rbo_ext(a, a) - 1.0) < 1e-12
+    assert rbo_ext(a, list("ijklmnop")) == 0.0
+    swapped_top, swapped_tail = list("bacdefgh"), list("abcdefhg")
+    assert rbo_ext(a, swapped_tail) > rbo_ext(a, swapped_top)   # top-weighted
+    assert abs(rbo_ext(a, list("abc")) - rbo_ext(list("abc"), a)) < 1e-12
+
+
+def test_faithfulness_replacement_keeps_length():
+    from analysis.faithfulness import _variants
+    texts = _variants("a b c d e f g h i j".split(), np.arange(10), replacement="[MASK]")
+    assert all(len(t.split()) == 10 for t in texts)
+    assert texts[0].startswith("[MASK] b c") and texts[1].startswith("a [MASK]")

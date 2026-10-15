@@ -5,7 +5,7 @@ Usage (from the repository root):
     uv run python -m analysis.report experiment_1 [--instance-dir DIR] [--device mps]
 
 Writes results/analysis/<experiment>.json and .md with:
-  1. reproduced results next to the paper's published tables,
+  1. stability under the current protocol, with the conference-version values for reference,
   2. stability over all vs. prediction-invariant comparisons,
   3. agreement between explainers on the same inputs,
   4. deletion-based faithfulness vs. a random baseline,
@@ -80,9 +80,9 @@ def build_report(experiment_key: str, instance_dir: str, device: str = None, wit
 
 def to_markdown(report) -> str:
     lines = [f"# Analysis: {report['experiment']}", "", f"Per-instance data: `{report['instance_dir']}`", ""]
-    lines += ["## 1. Reproduced vs. published (all comparisons)", "",
-              "| Explainer | Stress test | " + " | ".join(f"{LABELS[m]} (now)" for m in METRICS)
-              + " | " + " | ".join(f"{LABELS[m]} (paper)" for m in METRICS) + " | n inst. |",
+    lines += ["## 1. Stability under the current protocol (all comparisons; conference version for reference)", "",
+              "| Explainer | Stress test | " + " | ".join(f"{LABELS[m]}" for m in METRICS)
+              + " | " + " | ".join(f"{LABELS[m]} (conf.)" for m in METRICS) + " | n inst. |",
               "|" + "---|" * (3 + 2 * len(METRICS))]
     for key, s in report['combinations'].items():
         explainer, test = key.split('/')

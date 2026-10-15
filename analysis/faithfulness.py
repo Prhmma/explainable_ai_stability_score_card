@@ -10,9 +10,13 @@ For an explanation of the predicted class, words are ranked by attribution
 Higher comprehensiveness and lower sufficiency indicate a more faithful
 ranking. Each is averaged over the fractions (AOPC) and reported next to the
 same quantities for a random ranking, so a method is judged against chance.
+
+Words are deleted by default. With a replacement token (e.g. the tokenizer's
+mask token), removed words are replaced instead, which keeps the input length
+and does not share LIME's own perturbation operator (word deletion).
 """
 
-from typing import Any, Callable, Dict, List, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence
 
 import numpy as np
 import torch
@@ -20,7 +24,9 @@ import torch
 FRACTIONS = (0.1, 0.2, 0.5)
 
 
-def make_predict_proba(model: Any, tokenizer: Any, batch_size: int = 64) -> Callable[[List[str]], np.ndarray]:
+def make_predict_proba(model: Any, tokenizer: Any, batch_size: int = 64,
+                       logits: bool = False) -> Callable[[List[str]], np.ndarray]:
+    """Class probabilities (or raw logits) for a list of texts."""
     def predict(texts: List[str]) -> np.ndarray:
         out = []
         for start in range(0, len(texts), batch_size):
@@ -28,7 +34,8 @@ def make_predict_proba(model: Any, tokenizer: Any, batch_size: int = 64) -> Call
             inputs = tokenizer(batch, return_tensors='pt', padding=True, truncation=True, max_length=512)
             inputs = {k: v.to(model.device) for k, v in inputs.items()}
             with torch.no_grad():
-                out.append(torch.softmax(model(**inputs).logits, dim=-1).float().cpu().numpy())
+                z = model(**inputs).logits
+                out.append((z if logits else torch.softmax(z, dim=-1)).float().cpu().numpy())
         return np.concatenate(out)
     return predict
 
@@ -53,23 +60,30 @@ def word_scores_for_text(text: str, words: Sequence[Sequence[Any]]) -> np.ndarra
     return scores
 
 
-def _variants(tokens: List[str], order: np.ndarray) -> List[str]:
+def _variants(tokens: List[str], order: np.ndarray, replacement: Optional[str] = None) -> List[str]:
     """Texts with the top-k words removed and with only the top-k words kept, for each fraction."""
+    def keep(selected):
+        if replacement is None:
+            return " ".join(t for i, t in enumerate(tokens) if selected(i))
+        return " ".join(t if selected(i) else replacement for i, t in enumerate(tokens))
+
     texts = []
     for q in FRACTIONS:
         k = max(1, int(round(q * len(tokens))))
         top = set(order[:k].tolist())
-        texts.append(" ".join(t for i, t in enumerate(tokens) if i not in top))
-        texts.append(" ".join(t for i, t in enumerate(tokens) if i in top))
+        texts.append(keep(lambda i: i not in top))
+        texts.append(keep(lambda i: i in top))
     return texts
 
 
 def faithfulness(records: List[Dict[str, Any]], predict: Callable[[List[str]], np.ndarray],
-                 random_draws: int = 3, seed: int = 0, per_instance: bool = False) -> Dict[str, Any]:
+                 random_draws: int = 3, seed: int = 0, per_instance: bool = False,
+                 replacement: Optional[str] = None) -> Dict[str, Any]:
     """
     AOPC comprehensiveness and sufficiency for explanations vs. random rankings.
 
-    With per_instance, also returns the explainer's scores by sample_idx.
+    With per_instance, also returns the explainer's scores by sample_idx. With
+    replacement, removed words are replaced by that token instead of deleted.
     """
     rng = np.random.RandomState(seed)
     plans = []  # (instance index, kind, texts)
@@ -79,9 +93,9 @@ def faithfulness(records: List[Dict[str, Any]], predict: Callable[[List[str]], n
         if len(tokens) < 2:
             continue
         scores = word_scores_for_text(text, r['original_explanation']['words'])
-        plans.append((i, 'explainer', _variants(tokens, np.argsort(-scores, kind='stable'))))
+        plans.append((i, 'explainer', _variants(tokens, np.argsort(-scores, kind='stable'), replacement)))
         for _ in range(random_draws):
-            plans.append((i, 'random', _variants(tokens, rng.permutation(len(tokens)))))
+            plans.append((i, 'random', _variants(tokens, rng.permutation(len(tokens)), replacement)))
 
     full = predict([records[i]['original_text'] for i in sorted({p[0] for p in plans})])
     full_prob = {i: full[j] for j, i in enumerate(sorted({p[0] for p in plans}))}
