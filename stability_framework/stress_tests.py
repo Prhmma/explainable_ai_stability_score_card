@@ -36,8 +36,9 @@ except ImportError:
 logger = logging.getLogger(__name__)
 
 
-# Version of the paraphrase generator; part of the paraphrase cache key
-PARAPHRASE_GENERATOR_VERSION = 3
+# Version of the paraphrase generator; part of the paraphrase cache key and run fingerprint
+# (4: context- and entailment-validated substitutions; no capitalised words; no fixed phrase list)
+PARAPHRASE_GENERATOR_VERSION = 4
 
 
 class BaseStressTest(ABC):
@@ -229,211 +230,289 @@ class PreprocessingVariationTest(BaseStressTest):
         return variants
 
 
+# Verdicts of the LLM judge on paraphrase candidates (see resources/paraphrase_judge_prompt.md)
+DEFAULT_JUDGMENTS_PATH = os.path.join(os.path.dirname(__file__), 'resources', 'paraphrase_judgments.jsonl')
+JUDGE_PROMPT_VERSION = 1
+
+
+class PendingJudgmentError(RuntimeError):
+    """Raised when paraphrase candidates have not been judged yet."""
+
+    def __init__(self, message: str, candidates: List[Dict[str, Any]]):
+        super().__init__(message)
+        self.candidates = candidates
+
+
+def candidate_id(text: str, candidate: Dict[str, Any]) -> str:
+    """Stable id of a paraphrase candidate (the text and its edit)."""
+    if candidate['type'] == 'synonym':
+        key = [text, candidate['position'], candidate['original'], candidate['substitute']]
+    else:
+        key = [text, 'reorder', candidate['text']]
+    return hashlib.sha1(json.dumps(key).encode()).hexdigest()[:16]
+
+
+def load_judgments(path: str) -> Dict[str, str]:
+    """Candidate id -> verdict from a JSONL file of judge verdicts (empty if the file does not exist)."""
+    verdicts: Dict[str, str] = {}
+    if path and os.path.exists(path):
+        with open(path, encoding='utf-8') as f:
+            for line in f:
+                if line.strip():
+                    entry = json.loads(line)
+                    verdicts[entry['id']] = entry['verdict']
+    return verdicts
+
+
 class SemanticParaphrasingTest(BaseStressTest):
     """
-    Semantic paraphrasing stress test - generates meaning-preserving variants.
-    Uses synonym substitution and minor reordering with semantic similarity filtering.
+    Semantic paraphrasing stress test: meaning-preserving variants of a text.
+
+    Candidates are single-word synonym substitutions and clause swaps. A
+    candidate is kept only if it passes every check, and the test fails closed
+    when a check cannot be run:
+    - substitutions touch only lowercase alphabetic content words in their base
+      form (never stopwords, capitalised words such as proper nouns and
+      headline words, acronyms, numbers or markup), and synonyms come from the
+      word's most frequent WordNet senses and are attested in SemCor;
+    - the substitute must fit the context: under a masked language model
+      (bert-base-cased, a different family from the explained classifiers) its
+      log-probability at the word's position is at most `mlm_max_log_drop`
+      below the original word's;
+    - sentence embeddings (all-MiniLM-L6-v2) must reach `similarity_threshold`;
+    - original and variant must entail each other (NLI cross-encoder,
+      nli-deberta-v3-base), each direction with probability at least
+      `nli_min_entailment`.
+    - an LLM judge must accept the candidate in context (verdicts are stored
+      in resources/paraphrase_judgments.jsonl; unjudged candidates raise
+      PendingJudgmentError rather than being used).
+    The best-validated variants (highest weaker-direction entailment) are kept,
+    at most one per word position and `max_variants` in total.
+    All auxiliary models run on CPU.
     """
-    
-    def __init__(self, random_seed: int = 42, similarity_threshold: float = 0.8, cache_dir: str = None):
+
+    SENSES_PER_WORD = 2
+    SENSE_MIN_SHARE = 0.2
+    SYNONYMS_PER_WORD = 3
+    MLM_NAME = 'bert-base-cased'
+    NLI_NAME = 'cross-encoder/nli-deberta-v3-base'
+
+    def __init__(self, random_seed: int = 42, similarity_threshold: float = 0.8, cache_dir: str = None,
+                 nli_min_entailment: float = 0.9, mlm_max_log_drop: float = 5.0, max_variants: int = 4,
+                 judgments_path: Optional[str] = DEFAULT_JUDGMENTS_PATH):
         super().__init__("SemanticParaphrasing", random_seed)
         self.similarity_threshold = similarity_threshold
-        
-        # Set up caching
+        self.nli_min_entailment = nli_min_entailment
+        self.mlm_max_log_drop = mlm_max_log_drop
+        self.max_variants = max_variants
+        # Judge verdicts (candidate id -> "Y"/"N"); None disables judging (diagnostics only)
+        self.judgments_path = judgments_path
+        self.judgments = load_judgments(judgments_path) if judgments_path else None
+
         self.cache_dir = cache_dir or os.path.join(
             os.path.expanduser('~'), '.cache', 'stability_framework', 'paraphrases'
         )
         self.use_cache = True
         os.makedirs(self.cache_dir, exist_ok=True)
-        
-        # Initialize semantic similarity model if available
-        # Paraphrases are only valid if their similarity to the original is
-        # verified, so the test fails closed when the model is unavailable
-        # (previously unvalidated paraphrases were used, and cached).
+
+        # Paraphrases are only valid if they are verified, so the test fails
+        # closed when the validation models are unavailable
         if not SENTENCE_TRANSFORMERS_AVAILABLE:
-            raise RuntimeError("Semantic paraphrasing requires sentence-transformers for similarity validation")
-        # On CPU: on Apple Silicon (MPS) its default SDPA attention can give wrong
-        # outputs, and variable-length batches grew memory without bound
+            raise RuntimeError("Semantic paraphrasing requires sentence-transformers for validation")
+        if not NLTK_AVAILABLE:
+            raise RuntimeError("Semantic paraphrasing requires NLTK (WordNet, POS tagger)")
+        # On CPU: on Apple Silicon (MPS) SDPA attention can give wrong outputs
         self.similarity_model = SentenceTransformer('all-MiniLM-L6-v2', device='cpu')
-        logger.info("Loaded sentence transformer model for similarity filtering")
-        
-        # Initialize NLTK wordnet if available
-        if NLTK_AVAILABLE:
+        self._nli = None
+        self._mlm = None
+        for resource, path in (('wordnet', 'corpora/wordnet'),
+                               ('averaged_perceptron_tagger_eng', 'taggers/averaged_perceptron_tagger_eng'),
+                               ('stopwords', 'corpora/stopwords')):
             try:
-                # Download only what is missing (a network call each time slowed every start-up)
-                for resource, path in (('wordnet', 'corpora/wordnet'),
-                                       ('averaged_perceptron_tagger_eng', 'taggers/averaged_perceptron_tagger_eng'),
-                                       ('stopwords', 'corpora/stopwords')):
-                    try:
-                        nltk.data.find(path)
-                    except LookupError:
-                        nltk.download(resource, quiet=True)
-                logger.info("NLTK wordnet initialized")
-            except Exception as e:
-                logger.warning(f"Could not initialize NLTK: {e}")
-        
+                nltk.data.find(path)
+            except LookupError:
+                nltk.download(resource, quiet=True)
+
+    # --- validation models (loaded on first use; cache hits never need them) ---
+
+    def _nli_model(self):
+        if self._nli is None:
+            from sentence_transformers import CrossEncoder
+            self._nli = CrossEncoder(self.NLI_NAME, device='cpu')
+            labels = {v.lower(): int(k) for k, v in self._nli.model.config.id2label.items()}
+            self._entailment_index = labels['entailment']
+        return self._nli
+
+    def _mlm_model(self):
+        if self._mlm is None:
+            import torch
+            from transformers import AutoModelForMaskedLM, AutoTokenizer
+            tokenizer = AutoTokenizer.from_pretrained(self.MLM_NAME)
+            model = AutoModelForMaskedLM.from_pretrained(self.MLM_NAME, attn_implementation='eager').eval()
+            self._mlm = (tokenizer, model, torch)
+        return self._mlm
+
+    # --- cache ---
+
+    def _parameters(self) -> Dict[str, Any]:
+        return {'similarity_threshold': self.similarity_threshold, 'nli_min_entailment': self.nli_min_entailment,
+                'mlm_max_log_drop': self.mlm_max_log_drop, 'max_variants': self.max_variants,
+                'random_seed': self.random_seed, 'judged': self.judgments is not None,
+                'judge_prompt_version': JUDGE_PROMPT_VERSION if self.judgments is not None else None}
+
     def _get_cache_key(self, text: str) -> str:
-        """Generate a cache key for the given text and parameters."""
-        # Create a hash based on text content and paraphrasing parameters
-        content = {
-            'text': text,
-            'similarity_threshold': self.similarity_threshold,
-            'random_seed': self.random_seed,
-            'has_similarity_model': self.similarity_model is not None,
-            'nltk_available': NLTK_AVAILABLE,
-            # Bump when paraphrase generation changes so stale caches are not reused
-            'generator_version': PARAPHRASE_GENERATOR_VERSION
-        }
-        content_str = json.dumps(content, sort_keys=True)
-        return hashlib.md5(content_str.encode()).hexdigest()
-    
+        """Cache key for the text, the generator version and its parameters."""
+        content = {'text': text, 'generator_version': PARAPHRASE_GENERATOR_VERSION, **self._parameters()}
+        return hashlib.md5(json.dumps(content, sort_keys=True).encode()).hexdigest()
+
     def _load_from_cache(self, cache_key: str) -> Optional[List[str]]:
-        """Load paraphrases from cache if available."""
         if not self.use_cache:
             return None
-            
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.json")
-        
         try:
             if os.path.exists(cache_file):
                 with open(cache_file, 'r', encoding='utf-8') as f:
-                    cached_data = json.load(f)
-                    logger.debug(f"Loaded paraphrases from cache: {cache_key}")
-                    return cached_data['paraphrases']
+                    return json.load(f)['paraphrases']
         except Exception as e:
             logger.warning(f"Error loading from cache {cache_key}: {e}")
-        
         return None
-    
-    def _save_to_cache(self, cache_key: str, text: str, paraphrases: List[str]):
-        """Save paraphrases to cache."""
+
+    def _save_to_cache(self, cache_key: str, text: str, paraphrases: List[str],
+                       edits: Optional[List[Dict[str, Any]]] = None):
         if not self.use_cache:
             return
-            
         cache_file = os.path.join(self.cache_dir, f"{cache_key}.json")
-        
         try:
-            cache_data = {
-                'original_text': text,
-                'paraphrases': paraphrases,
-                'parameters': {
-                    'similarity_threshold': self.similarity_threshold,
-                    'random_seed': self.random_seed,
-                    'has_similarity_model': self.similarity_model is not None
-                },
-                'timestamp': datetime.now().isoformat(),
-                'cache_version': '1.0'
-            }
-            
+            cache_data = {'original_text': text, 'paraphrases': paraphrases, 'edits': edits or [],
+                          'parameters': self._parameters(), 'generator_version': PARAPHRASE_GENERATOR_VERSION,
+                          'timestamp': datetime.now().isoformat()}
             # Write atomically: concurrent runs share the cache and must never read a partial file
             tmp_file = f"{cache_file}.{os.getpid()}.tmp"
             with open(tmp_file, 'w', encoding='utf-8') as f:
                 json.dump(cache_data, f, indent=2, ensure_ascii=False)
             os.replace(tmp_file, cache_file)
-                
-            logger.debug(f"Saved paraphrases to cache: {cache_key}")
-            
         except Exception as e:
             logger.warning(f"Error saving to cache {cache_key}: {e}")
-    
+
+    # --- generation ---
+
     def apply(self, text: str) -> List[str]:
-        """Generate semantic paraphrases of the text."""
-        # Check cache first
+        """The original text followed by up to `max_variants` validated paraphrases."""
         cache_key = self._get_cache_key(text)
-        cached_paraphrases = self._load_from_cache(cache_key)
-        
-        if cached_paraphrases is not None:
-            logger.debug(f"Using cached paraphrases for text: {text[:50]}...")
-            return cached_paraphrases
-        
-        # Generate paraphrases if not cached
-        logger.debug(f"Generating paraphrases for text: {text[:50]}...")
-        variants = []
-        
-        # Original text
-        variants.append(text)
-        
-        # Generate each category of paraphrase, filtered by semantic similarity
-        categories = [
-            self._generate_synonym_substitutions(text),
-            self._generate_reorderings(text),
-            self._generate_simple_transformations(text),
-        ]
-        categories = [self._filter_by_similarity(text, c) if c else c for c in categories]
+        cached = self._load_from_cache(cache_key)
+        if cached is not None:
+            return cached
+        variants, edits = self.generate(text)
+        paraphrases = [text] + variants
+        self._save_to_cache(cache_key, text, paraphrases, edits)
+        return paraphrases
 
-        # Take variants round-robin across categories so that every category
-        # is represented, rather than the first category filling every slot
-        seen = {text}
-        unique_variants = []
-        for rank in range(max((len(c) for c in categories), default=0)):
-            for category in categories:
-                if rank < len(category) and category[rank] not in seen:
-                    seen.add(category[rank])
-                    unique_variants.append(category[rank])
+    def candidates(self, text: str) -> List[Dict[str, Any]]:
+        """Every candidate that passes the local checks (context, similarity, mutual entailment), with an id."""
+        proposals = self._generate_synonym_substitutions(text) + self._generate_reorderings(text)
+        if not proposals:
+            return []
+        sims = self._similarities(text, [c['text'] for c in proposals])
+        kept = [dict(c, similarity=float(s)) for c, s in zip(proposals, sims) if s >= self.similarity_threshold]
+        if not kept:
+            return []
+        forward, backward = self._entailment(text, [c['text'] for c in kept])
+        validated = []
+        for c, f, b in zip(kept, forward, backward):
+            c.update(entail_forward=float(f), entail_backward=float(b), id=candidate_id(text, c))
+            if min(f, b) >= self.nli_min_entailment:
+                validated.append(c)
+        return validated
 
-        final_paraphrases = [text] + unique_variants[:4]  # Original + up to 4 variants
-        
-        # Save to cache
-        self._save_to_cache(cache_key, text, final_paraphrases)
-        
-        return final_paraphrases
-    
-    def _generate_synonym_substitutions(self, text: str) -> List[str]:
+    def generate(self, text: str):
         """
-        Replace one content word at a time with a WordNet synonym of the same part of speech.
+        Validated variants and a record of each one's edit and validation scores.
 
-        Only nouns, verbs, adjectives and adverbs in their base form are
-        substituted, never stopwords or auxiliaries (WordNet would otherwise
-        map "a" to "ampere" or "is" to "exist"), and inflected words are left
-        alone because WordNet synonyms are uninflected ("puts" -> "put").
-        Capitalized synonyms (acronyms, proper nouns) are skipped. Synonyms
-        keep WordNet's frequency order, so the output is deterministic. The
-        rest of the text, including whitespace, is left unchanged.
+        With judgments loaded (the default), a candidate is used only if the
+        judge accepted it; a candidate without a verdict raises
+        PendingJudgmentError, so unjudged paraphrases are never used.
         """
-        variants = []
-        if not NLTK_AVAILABLE:
-            return variants
+        validated = self.candidates(text)
+        if self.judgments is not None:
+            missing = [c for c in validated if c['id'] not in self.judgments]
+            if missing:
+                raise PendingJudgmentError(f"{len(missing)} paraphrase candidate(s) have no judge verdict", missing)
+            validated = [dict(c, verdict='Y') for c in validated if self.judgments[c['id']] == 'Y']
+        # Most confidently meaning-preserving first; at most one variant per word position
+        validated.sort(key=lambda c: (-min(c['entail_forward'], c['entail_backward']), str(c.get('position', -1))))
+        chosen, used = [], set()
+        for c in validated:
+            key = c.get('position', ('reorder',))
+            if key in used:
+                continue
+            used.add(key)
+            chosen.append(c)
+            if len(chosen) == self.max_variants:
+                break
+        return [c['text'] for c in chosen], chosen
 
-        try:
-            import nltk
+    def _generate_synonym_substitutions(self, text: str) -> List[Dict[str, Any]]:
+        """Context-checked single-word synonym substitutions (see the class docstring)."""
+        spans = [m.span() for m in re.finditer(r"\S+", text)]
+        if len(spans) < 2:
+            return []
+        words = [text[a:b] for a, b in spans]
+        cores = [w.strip(string.punctuation) for w in words]
+        tags = nltk.pos_tag([c or w for c, w in zip(cores, words)])
+        stop = self._stopwords()
+        proposals = []
+        for index, ((a, b), word, core, (_, tag)) in enumerate(zip(spans, words, cores, tags)):
+            pos = self._wordnet_pos(tag)
+            if pos is None or not core.isalpha() or not core.islower() or core in stop:
+                continue  # also skips capitalised words: proper nouns, headline words, acronyms
+            if wordnet.morphy(core, pos) != core:
+                continue  # inflected form (WordNet synonyms are uninflected)
+            for synonym in self._get_synonyms(core, pos):
+                variant = text[:a] + word.replace(core, synonym, 1) + text[b:]
+                proposals.append({'type': 'synonym', 'position': index, 'original': core,
+                                  'substitute': synonym, 'text': variant})
+        return [p for p in proposals if self._fits_context(text, spans, p)]
 
-            spans = [m.span() for m in re.finditer(r"\S+", text)]
-            if len(spans) < 2:
-                return variants
+    def _fits_context(self, text: str, spans, proposal: Dict[str, Any]) -> bool:
+        """Masked-LM check: the substitute is not much less probable than the original word in context."""
+        tokenizer, model, torch = self._mlm_model()
+        ids = [tokenizer.convert_tokens_to_ids(w) for w in (proposal['original'], proposal['substitute'])]
+        if tokenizer.unk_token_id in ids:
+            proposal['mlm_log_drop'] = None
+            return False  # multi-piece words cannot be scored at one position
+        a, b = spans[proposal['position']]
+        word = text[a:b]
+        masked = text[:a] + word.replace(proposal['original'], tokenizer.mask_token, 1) + text[b:]
+        enc = tokenizer(masked, return_tensors='pt', truncation=True, max_length=512)
+        positions = (enc['input_ids'][0] == tokenizer.mask_token_id).nonzero()
+        if len(positions) != 1:
+            return False
+        with torch.no_grad():
+            log_probs = torch.log_softmax(model(**enc).logits[0, positions[0, 0]], dim=-1)
+        drop = float(log_probs[ids[0]] - log_probs[ids[1]])
+        proposal['mlm_log_drop'] = drop
+        return drop <= self.mlm_max_log_drop
 
-            words = [text[a:b] for a, b in spans]
-            cores = [w.strip(string.punctuation) for w in words]
-            tags = nltk.pos_tag([c or w for c, w in zip(cores, words)])
-            stop = self._stopwords()
+    def _similarities(self, original: str, variants: List[str]) -> np.ndarray:
+        from sklearn.metrics.pairwise import cosine_similarity
+        return cosine_similarity(self.similarity_model.encode([original]), self.similarity_model.encode(variants))[0]
 
-            for (a, b), word, core, (_, tag) in zip(spans, words, cores, tags):
-                pos = self._wordnet_pos(tag)
-                if pos is None or not core.isalpha() or core.lower() in stop:
-                    continue
-                if wordnet.morphy(core.lower(), pos) != core.lower():
-                    continue  # inflected form
-                for synonym in self._get_synonyms(core.lower(), pos)[:2]:  # Limit to 2 synonyms per word
-                    if core.isupper():
-                        synonym = synonym.upper()
-                    elif core.istitle():
-                        synonym = synonym.capitalize()
-                    variants.append(text[:a] + word.replace(core, synonym, 1) + text[b:])
-
-        except Exception as e:
-            logger.warning(f"Error in synonym substitution: {e}")
-
-        return variants
+    def _entailment(self, original: str, variants: List[str]):
+        nli = self._nli_model()
+        pairs = [(original, v) for v in variants] + [(v, original) for v in variants]
+        probs = nli.predict(pairs, apply_softmax=True, batch_size=32, show_progress_bar=False)[:, self._entailment_index]
+        return probs[:len(variants)], probs[len(variants):]
 
     @staticmethod
     def _has_finite_verb(phrase: str) -> bool:
         """Whether a phrase contains a finite verb (VBZ, VBP, VBD) or modal (MD)."""
-        if not NLTK_AVAILABLE:
-            return False
         return any(tag in ('VBZ', 'VBP', 'VBD', 'MD') for _, tag in nltk.pos_tag(phrase.split()))
 
     @staticmethod
     def _wordnet_pos(treebank_tag: str) -> Optional[str]:
-        """Map a Penn Treebank tag to a WordNet POS (content words only)."""
+        """Map a Penn Treebank tag to a WordNet POS (content words only; never proper nouns)."""
+        if treebank_tag in ('NNP', 'NNPS'):
+            return None
         if treebank_tag.startswith('NN'):
             return wordnet.NOUN
         if treebank_tag.startswith('VB'):
@@ -454,30 +533,39 @@ class SemanticParaphrasingTest(BaseStressTest):
                     "have", "has", "had", "do", "does", "did", "not", "no", "it", "its", "s", "t"}
 
     def _get_synonyms(self, word: str, pos: Optional[str] = None) -> List[str]:
-        """Single-word WordNet synonyms of `word` (optionally of one POS), in WordNet order."""
+        """
+        Single-word synonyms from the word's most frequent senses, attested in SemCor.
+
+        Restricting to the leading senses (WordNet orders senses by frequency),
+        to senses in which the word itself is commonly used, and to lemmas with
+        a non-zero SemCor count avoids rare senses such as "company" ->
+        "companionship", "buy" -> "bribe" or "good" -> "full".
+        """
         synonyms: Dict[str, None] = {}
-        try:
-            for synset in wordnet.synsets(word, pos=pos):
-                for lemma in synset.lemmas():
-                    synonym = lemma.name().replace('_', ' ')
-                    if synonym.lower() != word.lower() and synonym.isalpha() and synonym.islower():
-                        synonyms.setdefault(synonym, None)
-        except Exception as e:
-            logger.debug(f"Error getting synonyms for '{word}': {e}")
+        senses = wordnet.synsets(word, pos=pos)[:self.SENSES_PER_WORD]
+        # A sense counts only if the word is used in it at least SENSE_MIN_SHARE as
+        # often as in its main sense (SemCor counts), e.g. not "buy" as "bribe"
+        uses = [sum(l.count() for l in s.lemmas() if l.name().lower() == word) for s in senses]
+        if uses and max(uses) > 0:
+            senses = [s for s, u in zip(senses, uses) if u >= self.SENSE_MIN_SHARE * max(uses)]
+        else:
+            senses = senses[:1]
+        for synset in senses:
+            for lemma in synset.lemmas():
+                synonym = lemma.name()
+                if (synonym.lower() != word and synonym.isalpha() and synonym.islower()
+                        and lemma.count() > 0):
+                    synonyms.setdefault(synonym, None)
+        return list(synonyms)[:self.SYNONYMS_PER_WORD]
 
-        return list(synonyms)[:3]  # Return up to 3 synonyms
-
-    def _generate_reorderings(self, text: str) -> List[str]:
+    def _generate_reorderings(self, text: str) -> List[Dict[str, Any]]:
         """
         Swap two clauses joined by a comma or "and" ("A , B" -> "B , A").
 
-        Both parts must contain a finite verb (so phrases such as "a moving,
-        beautifully acted film" are not treated as clauses), and clauses
-        starting with a subordinating or contrastive word ("but", "because",
-        ...) are not moved, since swapping them changes meaning. Word-level
-        shuffles, which break grammaticality, are not generated.
+        Both parts must contain a finite verb, and clauses starting with a
+        subordinating or contrastive word are not moved. Validation then
+        requires mutual entailment, which rejects swaps that change meaning.
         """
-        variants = []
         body = text.rstrip()
         tail_space = text[len(body):]
         trailing = ""
@@ -485,7 +573,6 @@ class SemanticParaphrasingTest(BaseStressTest):
         if match:
             trailing = body[match.start():].strip()
             body = body[:match.start()]
-
         for joiner in (" , ", ", ", " and "):
             parts = body.split(joiner)
             if len(parts) == 2 and all(len(p.split()) >= 2 and self._has_finite_verb(p) for p in parts):
@@ -493,46 +580,8 @@ class SemanticParaphrasingTest(BaseStressTest):
                 if second.split()[0].lower() in {"but", "yet", "so", "because", "although", "though", "while"}:
                     continue
                 swapped = f"{second}{joiner}{first}"
-                variants.append((f"{swapped} {trailing}" if trailing else swapped) + tail_space)
-                break
-
-        return variants
-
-    def _generate_simple_transformations(self, text: str) -> List[str]:
-        """Generate simple transformations that preserve meaning."""
-        variants = []
-        
-        # Common phrase transformations
-        transformations = [
-            (r'\bgood\b', 'great'),
-            (r'\bgreat\b', 'excellent'),
-            (r'\bbad\b', 'terrible'),
-            (r'\bterrible\b', 'awful'),
-            (r'\bmovie\b', 'film'),
-            (r'\bfilm\b', 'movie'),
-            (r'\bvery\b', 'extremely'),
-            (r'\breally\b', 'very'),
-            (r'\bawesome\b', 'amazing'),
-            (r'\bnice\b', 'pleasant'),
-        ]
-        
-        for pattern, replacement in transformations:
-            if re.search(pattern, text, re.IGNORECASE):
-                variant = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
-                if variant != text:
-                    variants.append(variant)
-                    
-        return variants
-    
-    def _filter_by_similarity(self, original: str, variants: List[str]) -> List[str]:
-        """Keep variants whose cosine similarity to the original meets the threshold (errors propagate)."""
-        from sklearn.metrics.pairwise import cosine_similarity
-        original_embedding = self.similarity_model.encode([original])
-        variant_embeddings = self.similarity_model.encode(variants)
-        similarities = cosine_similarity(original_embedding, variant_embeddings)[0]
-        filtered_variants = [v for v, sim in zip(variants, similarities) if sim >= self.similarity_threshold or v == original]
-        logger.debug(f"Filtered {len(variants)} to {len(filtered_variants)} variants by similarity")
-        return filtered_variants
+                return [{'type': 'reorder', 'text': (f"{swapped} {trailing}" if trailing else swapped) + tail_space}]
+        return []
 
 
 # Factory function for creating stress tests

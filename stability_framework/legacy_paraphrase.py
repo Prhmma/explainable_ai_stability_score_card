@@ -10,7 +10,10 @@ variants fill the four slots before reorderings or transformations are tried;
 and reordering moves single words. Do not use it for new studies.
 """
 
+import hashlib
+import json
 import logging
+import re
 from typing import List
 
 from .stress_tests import NLTK_AVAILABLE, SemanticParaphrasingTest  # noqa: F401 (used by the verbatim methods)
@@ -26,7 +29,17 @@ class LegacyParaphrasingTest(SemanticParaphrasingTest):
         self.name = "SemanticParaphrasingV1"
 
     def _get_cache_key(self, text: str) -> str:
-        return "v1_" + super()._get_cache_key(text)
+        # Frozen to the key used when the comparison runs were made (generator
+        # version 3 of the current class), so cached v1 paraphrases are reused
+        content = {
+            'text': text,
+            'similarity_threshold': self.similarity_threshold,
+            'random_seed': self.random_seed,
+            'has_similarity_model': True,
+            'nltk_available': NLTK_AVAILABLE,
+            'generator_version': 3,
+        }
+        return "v1_" + hashlib.md5(json.dumps(content, sort_keys=True).encode()).hexdigest()
 
     # --- methods below are copied verbatim from commit cc9153f ---
 
@@ -158,3 +171,59 @@ class LegacyParaphrasingTest(SemanticParaphrasingTest):
                 variants.append(" ".join(swapped))
         
         return variants
+
+    # The two helpers below were inherited from the released class; they are
+    # copied verbatim from commit cc9153f so the current generator can change.
+
+    def _generate_simple_transformations(self, text: str) -> List[str]:
+        """Generate simple transformations that preserve meaning."""
+        variants = []
+        
+        # Common phrase transformations
+        transformations = [
+            (r'\bgood\b', 'great'),
+            (r'\bgreat\b', 'excellent'),
+            (r'\bbad\b', 'terrible'),
+            (r'\bterrible\b', 'awful'),
+            (r'\bmovie\b', 'film'),
+            (r'\bfilm\b', 'movie'),
+            (r'\bvery\b', 'extremely'),
+            (r'\breally\b', 'very'),
+            (r'\bawesome\b', 'amazing'),
+            (r'\bnice\b', 'pleasant'),
+        ]
+        
+        for pattern, replacement in transformations:
+            if re.search(pattern, text, re.IGNORECASE):
+                variant = re.sub(pattern, replacement, text, flags=re.IGNORECASE)
+                if variant != text:
+                    variants.append(variant)
+                    
+        return variants
+    
+    def _filter_by_similarity(self, original: str, variants: List[str]) -> List[str]:
+        """Filter variants by semantic similarity to original."""
+        if not self.similarity_model:
+            return variants
+            
+        try:
+            # Calculate embeddings
+            original_embedding = self.similarity_model.encode([original])
+            variant_embeddings = self.similarity_model.encode(variants)
+            
+            # Calculate similarities
+            from sklearn.metrics.pairwise import cosine_similarity
+            similarities = cosine_similarity(original_embedding, variant_embeddings)[0]
+            
+            # Filter by threshold
+            filtered_variants = []
+            for variant, similarity in zip(variants, similarities):
+                if similarity >= self.similarity_threshold or variant == original:
+                    filtered_variants.append(variant)
+                    
+            logger.debug(f"Filtered {len(variants)} to {len(filtered_variants)} variants by similarity")
+            return filtered_variants
+            
+        except Exception as e:
+            logger.warning(f"Error in similarity filtering: {e}")
+            return variants

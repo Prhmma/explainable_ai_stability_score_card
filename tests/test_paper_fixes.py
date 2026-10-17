@@ -57,7 +57,7 @@ class TestParaphrasing:
     @pytest.fixture(scope="class")
     def paraphraser(self, tmp_path_factory):
         from stability_framework.stress_tests import SemanticParaphrasingTest
-        test = SemanticParaphrasingTest(cache_dir=str(tmp_path_factory.mktemp("paraphrases")))
+        test = SemanticParaphrasingTest(cache_dir=str(tmp_path_factory.mktemp("paraphrases")), judgments_path=None)
         test.use_cache = False
         return test
 
@@ -70,8 +70,8 @@ class TestParaphrasing:
     def test_stopwords_are_never_substituted(self, paraphraser):
         text = "a film that is not as good as it thinks it is"
         stop = paraphraser._stopwords()
-        for variant in paraphraser._generate_synonym_substitutions(text):
-            changed = [a for a, b in zip(text.split(), variant.split()) if a != b]
+        for proposal in paraphraser._generate_synonym_substitutions(text):
+            changed = [a for a, b in zip(text.split(), proposal['text'].split()) if a != b]
             assert len(changed) == 1 and changed[0].lower() not in stop
 
     def test_synonyms_are_deterministic_and_lowercase(self, paraphraser):
@@ -81,7 +81,7 @@ class TestParaphrasing:
         assert all(s.islower() for s in first)
 
     def test_clause_reordering_swaps_clauses_and_keeps_punctuation(self, paraphraser):
-        assert paraphraser._generate_reorderings("the cast is great , the script is weak . ") == [
+        assert [p['text'] for p in paraphraser._generate_reorderings("the cast is great , the script is weak . ")] == [
             "the script is weak , the cast is great . "
         ]
         # Contrastive clauses are not moved
@@ -377,7 +377,7 @@ class TestParaphraseClauses:
         from stability_framework.stress_tests import SemanticParaphrasingTest
         t = SemanticParaphrasingTest(cache_dir=str(tmp_path))
         assert t._generate_reorderings("a moving , beautifully acted film . ") == []
-        assert t._generate_reorderings("the cast is great , the script is weak . ") == ["the script is weak , the cast is great . "]
+        assert [p['text'] for p in t._generate_reorderings("the cast is great , the script is weak . ")] == ["the script is weak , the cast is great . "]
 
 
 class TestAggregationStatistics:
@@ -402,3 +402,57 @@ class TestCustomSeedLists:
         r = a._process_sample("a gripping film .", 1, create_explainer("lime", random_seed=42, num_samples=100),
                               create_stress_test("seed_variation", seeds=[1, 2, 3]), 0)
         assert r["compared_variant_indices"] == [0, 1, 2] and len(r["metrics"]) == 3
+
+
+@pytest.mark.slow
+class TestValidatedParaphrasing:
+    """Generator v4: candidate restrictions and context/entailment validation."""
+
+    @pytest.fixture(scope="class")
+    def paraphraser(self, tmp_path_factory):
+        from stability_framework.stress_tests import SemanticParaphrasingTest
+        return SemanticParaphrasingTest(cache_dir=str(tmp_path_factory.mktemp("cache")), judgments_path=None)
+
+    def test_capitalised_words_and_proper_nouns_are_never_substituted(self, paraphraser):
+        text = "Bush and the EU plan to buy US company shares , Reuters said ."
+        for proposal in paraphraser._generate_synonym_substitutions(text):
+            assert proposal['original'].islower()
+
+    def test_rare_senses_are_not_proposed(self, paraphraser):
+        from nltk.corpus import wordnet
+        assert "companionship" not in paraphraser._get_synonyms("company", wordnet.NOUN)
+        assert "bribe" not in paraphraser._get_synonyms("buy", wordnet.VERB)
+
+    def test_out_of_context_substitute_is_rejected(self, paraphraser):
+        text = "the problem with this film is that it lacks focus"
+        spans = [(m.start(), m.end()) for m in __import__("re").finditer(r"\S+", text)]
+        bad = {'position': 1, 'original': 'problem', 'substitute': 'job'}
+        good = {'position': 1, 'original': 'problem', 'substitute': 'trouble'}
+        assert not paraphraser._fits_context(text, spans, bad)
+        assert paraphraser._fits_context(text, spans, good)
+
+    def test_every_variant_is_mutually_entailed_and_recorded(self, paraphraser):
+        text = "the company said profits rose sharply in the third quarter . "
+        variants, edits = paraphraser.generate(text)
+        assert len(variants) == len(edits) <= paraphraser.max_variants
+        for e in edits:
+            assert min(e['entail_forward'], e['entail_backward']) >= paraphraser.nli_min_entailment
+            assert e['similarity'] >= paraphraser.similarity_threshold
+
+    def test_unjudged_candidates_fail_closed_and_verdicts_are_applied(self, tmp_path):
+        import json as _json
+        from stability_framework.stress_tests import PendingJudgmentError, SemanticParaphrasingTest
+        text = "the company said profits rose sharply in the third quarter . "
+        empty = tmp_path / "none.jsonl"
+        empty.write_text("")
+        t = SemanticParaphrasingTest(cache_dir=str(tmp_path / "c1"), judgments_path=str(empty))
+        candidates = t.candidates(text)
+        assert candidates
+        with pytest.raises(PendingJudgmentError):
+            t.generate(text)
+        verdicts = tmp_path / "v.jsonl"
+        verdicts.write_text("".join(_json.dumps({"id": c["id"], "verdict": "Y" if k == 0 else "N"}) + "\n"
+                                    for k, c in enumerate(candidates)))
+        t2 = SemanticParaphrasingTest(cache_dir=str(tmp_path / "c2"), judgments_path=str(verdicts))
+        variants, edits = t2.generate(text)
+        assert [e["id"] for e in edits] == [candidates[0]["id"]]
