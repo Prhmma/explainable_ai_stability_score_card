@@ -21,6 +21,30 @@ def load_per_instance(instance_dir: str) -> Dict[Tuple[str, str], List[Dict[str,
     return records
 
 
+def load_latest_records(experiment_key: str) -> Dict[Tuple[str, str], List[Dict[str, Any]]]:
+    """
+    Per-instance records of an experiment, taking for each (explainer, stress test)
+    the most recent file across all of the experiment's run directories.
+
+    A rerun of one stress test (e.g. paraphrasing with a new generator) writes a
+    new run directory that holds only that test; this merges it with the
+    unchanged tests of earlier runs.
+    """
+    from analysis.report import REPO_ROOT, RUNNER_NAMES
+    latest: Dict[Tuple[str, str], str] = {}
+    for d in glob.glob(str(REPO_ROOT / 'results' / 'per_instance' / f'{RUNNER_NAMES[experiment_key]}_*')):
+        for path in glob.glob(os.path.join(d, '*.jsonl')):
+            key = tuple(os.path.basename(path)[:-len('.jsonl')].split('_', 1))
+            if key not in latest or os.path.getmtime(path) > os.path.getmtime(latest[key]):
+                latest[key] = path
+    records = {}
+    for key, path in latest.items():
+        with open(path, encoding='utf-8') as f:
+            rows = [json.loads(line) for line in f if line.strip()]
+        records[key] = sorted(rows, key=lambda r: r['sample_idx'])
+    return records
+
+
 def _summarize(values: Iterable[float]) -> Dict[str, float]:
     """Mean, sd and count over defined values; undefined (NaN) comparisons are counted separately."""
     arr = np.asarray(list(values), dtype=float)
