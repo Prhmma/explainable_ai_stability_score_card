@@ -160,3 +160,13 @@ def test_target_class_summary_replaces_only_changed_comparisons(tmp_path, monkey
     assert abs(b["spearman_correlation"]["all_own_target"] - 0.05) < 1e-12
     assert abs(b["spearman_correlation"]["all_original_target"] - 0.85) < 1e-12
     assert b["negative_rho_share_changed_original"] == 0.0
+
+
+def test_expected_jaccard_matches_simulation():
+    from analysis.inference import expected_jaccard
+    rng = np.random.default_rng(0)
+    n, k = 12, 5
+    sims = [len(set(a) & set(b)) / len(set(a) | set(b))
+            for a, b in ((rng.choice(n, k, replace=False), rng.choice(n, k, replace=False)) for _ in range(20000))]
+    assert abs(expected_jaccard(n, k) - np.mean(sims)) < 0.01
+    assert expected_jaccard(5, 5) == 1.0
