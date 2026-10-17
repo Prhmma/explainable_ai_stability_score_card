@@ -130,10 +130,11 @@ def dose_figure(out_dir: str, tests):
     print('wrote', path)
 
 
-def effects_figure(out_dir: str, tests):
+def effects_figure(out_dir: str, tests, contrasts=None, name='attribute_effects'):
     path_csv = REPO_ROOT / 'results' / 'analysis' / 'attribute_effects.csv'
     rows = [r for r in csv.DictReader(open(path_csv)) if r['test'] in tests]
-    contrasts = [c for c in CONTRAST_LABELS if any(r['contrast'] == c for r in rows)]
+    contrasts = [c for c in (contrasts or CONTRAST_LABELS) if any(r['contrast'] == c for r in rows)]
+    rows = [r for r in rows if r['contrast'] in contrasts]
     experiments = list(EXPERIMENT_TITLES)
     _style()
     fig, axes = plt.subplots(1, len(experiments), figsize=(6.3, 0.26 * len(contrasts) * len(tests) + 1.2),
@@ -174,7 +175,7 @@ def effects_figure(out_dir: str, tests):
     fig.legend(handles, labels, loc='lower center', ncol=3, frameon=False, bbox_to_anchor=(0.6, -0.02))
     fig.tight_layout(rect=(0, 0.05, 1, 1))
     os.makedirs(out_dir, exist_ok=True)
-    path = os.path.join(out_dir, 'attribute_effects.pdf')
+    path = os.path.join(out_dir, f'{name}.pdf')
     fig.savefig(path, bbox_inches='tight')
     fig.savefig(path.replace('.pdf', '.png'), dpi=200, bbox_inches='tight')
     print('wrote', path)
@@ -185,8 +186,13 @@ def main(argv=None):
     parser.add_argument('figure', choices=['dose', 'effects'])
     parser.add_argument('--out', required=True)
     parser.add_argument('--tests', nargs='+', default=['PreprocessingVariation', 'SemanticParaphrasing'])
+    parser.add_argument('--contrasts', nargs='+', choices=list(CONTRAST_LABELS), help='effects: rows to show (default: all)')
+    parser.add_argument('--name', default='attribute_effects', help='effects: output file name')
     args = parser.parse_args(argv)
-    (dose_figure if args.figure == 'dose' else effects_figure)(args.out, args.tests)
+    if args.figure == 'dose':
+        dose_figure(args.out, args.tests)
+    else:
+        effects_figure(args.out, args.tests, args.contrasts, args.name)
 
 
 if __name__ == '__main__':
