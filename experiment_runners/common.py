@@ -50,6 +50,8 @@ def run_experiment(
     parser.add_argument('--device', default=None, help="'cuda', 'mps' or 'cpu' (default: CUDA, then MPS, then CPU)")
     parser.add_argument('--results-dir', type=Path, default=DEFAULT_RESULTS_DIR,
                         help=f'Output directory (default: {DEFAULT_RESULTS_DIR})')
+    parser.add_argument('--tests', nargs='+', choices=STRESS_TESTS, default=STRESS_TESTS,
+                        help='Run only these stress tests (default: all)')
     args = parser.parse_args(argv)
 
     args.results_dir.mkdir(parents=True, exist_ok=True)
@@ -77,10 +79,10 @@ def run_experiment(
         model_name=model_name,
         dataset_config=dataset_config,
         explainer_names=EXPLAINERS,
-        stress_test_names=STRESS_TESTS,
+        stress_test_names=args.tests,
         experiment_name=experiment_name,
         explainer_params=EXPLAINER_PARAMS,
-        stress_test_params=STRESS_TEST_PARAMS
+        stress_test_params={t: STRESS_TEST_PARAMS[t] for t in args.tests}
     )
 
     card_path = args.results_dir / f'{experiment_name}_stability_card.md'
