@@ -29,7 +29,7 @@ from scipy.stats import spearmanr
 
 from analysis.measurement import jaccard_at_k
 from analysis.report import REPO_ROOT, RUNNER_NAMES, latest_instance_dir
-from analysis.stability import load_per_instance
+from analysis.stability import load_latest_records, load_per_instance
 
 TESTS = ('PreprocessingVariation', 'SemanticParaphrasing', 'SeedVariation')
 
@@ -86,7 +86,7 @@ def predictors(table: Dict[int, Dict[str, float]]) -> Dict[str, float]:
 
 
 def build(experiment_key: str, device: str = 'cpu', with_faithfulness: bool = True) -> Dict[str, Any]:
-    records = load_per_instance(latest_instance_dir(experiment_key))
+    records = load_latest_records(experiment_key)
     tables = {key: instance_table(rows) for key, rows in records.items()}
     out = {'experiment': experiment_key, 'predictors': {}, 'input_dependence': {}, 'within_vs_cross': {},
            'stability_vs_faithfulness': {}}

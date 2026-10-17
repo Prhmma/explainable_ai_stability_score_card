@@ -33,7 +33,7 @@ import numpy as np
 from analysis.instance_factors import _partial, _spearman, instance_table
 from analysis.measurement import explainer_differences, levenshtein, make_tokenizer
 from analysis.report import REPO_ROOT, RUNNER_NAMES, latest_instance_dir
-from analysis.stability import load_per_instance
+from analysis.stability import load_latest_records, load_per_instance
 from analysis.strength import word_edit_fraction
 
 RBO_P = 0.9
@@ -178,7 +178,7 @@ def model_checks(experiment_key: str, records, device: str) -> Dict[str, Any]:
 
 
 def build(experiment_key: str, device: str = 'cpu', with_model: bool = True) -> Dict[str, Any]:
-    records = load_per_instance(latest_instance_dir(experiment_key))
+    records = load_latest_records(experiment_key)
     rng = np.random.default_rng(0)
     out = {'experiment': experiment_key,
            'negative_rho': negative_rho_by_invariance(records),

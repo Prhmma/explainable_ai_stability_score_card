@@ -24,7 +24,7 @@ from typing import Any, Dict, List
 import numpy as np
 
 from analysis.report import REPO_ROOT, RUNNER_NAMES, latest_instance_dir
-from analysis.stability import load_per_instance
+from analysis.stability import load_latest_records, load_per_instance
 
 FACTORY_NAMES = {'IntegratedGradients': 'integrated_gradients', 'LIME': 'lime', 'SHAP': 'shap'}
 KEPT = ('jaccard_at_5', 'spearman_correlation', 'attr_diff_relative_difference_percentage')
@@ -74,6 +74,7 @@ def run(experiment_key: str, records, device: str) -> None:
                         'own_target': {k: m[k] for k in KEPT},
                         'original_target': {k: fixed[k] for k in KEPT},
                         'explained_class': exp.get('target_class'),
+                        'original_target_words': exp.get('words'),
                     }) + '\n')
                     f.flush()
                 if device == 'mps':
@@ -158,7 +159,7 @@ def main(argv=None):
     parser.add_argument('--device', default='mps')
     parser.add_argument('--summary-only', action='store_true')
     args = parser.parse_args(argv)
-    records = load_per_instance(latest_instance_dir(args.experiment))
+    records = load_latest_records(args.experiment)
     if not args.summary_only:
         run(args.experiment, records, args.device)
     result = summarise(args.experiment, records)

@@ -29,7 +29,7 @@ from scipy.stats import spearmanr
 
 from analysis.measurement import levenshtein, make_tokenizer
 from analysis.report import REPO_ROOT, RUNNER_NAMES, latest_instance_dir
-from analysis.stability import load_per_instance
+from analysis.stability import load_latest_records, load_per_instance
 
 B = 2000
 SESOI_J5 = 0.02
@@ -201,8 +201,8 @@ def lime_seed_reuse(records) -> Dict[str, Any]:
 
 def matched_agnews(rng) -> Dict[str, Any]:
     """RoBERTa (E3) vs DistilBERT (E4) on the shared texts and identical variants."""
-    e3 = load_per_instance(latest_instance_dir('experiment_3'))
-    e4 = load_per_instance(latest_instance_dir('experiment_4'))
+    e3 = load_latest_records('experiment_3')
+    e4 = load_latest_records('experiment_4')
     tok3, tok4 = make_tokenizer('experiment_3'), make_tokenizer('experiment_4')
     out = {}
     for explainer in ('IntegratedGradients', 'LIME', 'SHAP'):
@@ -287,7 +287,7 @@ def main(argv=None):
     if args.target == 'matched':
         result = {'kind': 'matched', 'combinations': matched_agnews(rng)}
     else:
-        records = load_per_instance(latest_instance_dir(args.target))
+        records = load_latest_records(args.target)
         result = {'experiment': args.target,
                   'strength': strength_correlations(args.target, records, rng),
                   'target_recovery': target_recovery(args.target, records, rng),

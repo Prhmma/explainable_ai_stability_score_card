@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any, Dict, List
 
 from analysis.report import REPO_ROOT, RUNNER_NAMES, latest_instance_dir
-from analysis.stability import METRICS, load_per_instance, stability_summary
+from analysis.stability import METRICS, load_latest_records, load_per_instance, stability_summary
 
 CONFIG_SUFFIXES = ('LegacyConfig', 'LegacyAlignment')
 LABELS = {'jaccard_at_5': 'J@5', 'spearman_correlation': 'ρ', 'attr_diff_relative_difference_percentage': 'AD (%)'}
@@ -103,9 +103,8 @@ def ranking(summaries: Dict[str, Any], which: str, metric: str = 'jaccard_at_5')
 
 
 def build(experiment_key: str) -> Dict[str, Any]:
-    main_dir = latest_instance_dir(experiment_key)
-    main = load_per_instance(main_dir)
-    result = {'experiment': experiment_key, 'main_dir': main_dir, 'configs': {}}
+    main = load_latest_records(experiment_key)
+    result = {'experiment': experiment_key, 'main_dir': 'latest records (merged across runs)', 'configs': {}}
     for config in ('legacy_ig_config', 'legacy_alignment', 'sdpa_attention'):
         try:
             result['configs'][config] = compare_config(main, load_per_instance(_config_dir(config, experiment_key)))

@@ -20,7 +20,7 @@ from pathlib import Path
 
 from analysis.faithfulness import faithfulness, make_predict_proba
 from analysis.paper_tables import PAPER_RESULTS
-from analysis.stability import METRICS, cross_method_agreement, load_per_instance, stability_summary
+from analysis.stability import METRICS, cross_method_agreement, load_latest_records, load_per_instance, stability_summary
 from analysis.strength import annotate_strength, make_embedder, stability_by_strength
 
 REPO_ROOT = Path(__file__).resolve().parent.parent
@@ -46,9 +46,10 @@ def _fmt(s):
 
 
 def build_report(experiment_key: str, instance_dir: str, device: str = None, with_faithfulness: bool = True):
-    records = load_per_instance(instance_dir)
+    records = load_per_instance(instance_dir) if instance_dir else load_latest_records(experiment_key)
     keys = sorted(records, key=lambda k: (k[0], TEST_ORDER.index(k[1]) if k[1] in TEST_ORDER else 9))
-    report = {'experiment': experiment_key, 'instance_dir': instance_dir, 'combinations': {}}
+    report = {'experiment': experiment_key, 'instance_dir': instance_dir or 'latest records (merged across runs)',
+              'combinations': {}}
     for explainer, test in keys:
         summary = stability_summary(records[(explainer, test)])
         paper = PAPER_RESULTS.get((experiment_key, explainer, test))
@@ -125,7 +126,7 @@ def main(argv=None):
     parser.add_argument('--device', default=None)
     parser.add_argument('--no-faithfulness', action='store_true')
     args = parser.parse_args(argv)
-    instance_dir = args.instance_dir or latest_instance_dir(args.experiment)
+    instance_dir = args.instance_dir
     report = build_report(args.experiment, instance_dir, args.device, not args.no_faithfulness)
     out = REPO_ROOT / 'results' / 'analysis'
     out.mkdir(parents=True, exist_ok=True)

@@ -170,3 +170,24 @@ def test_expected_jaccard_matches_simulation():
             for a, b in ((rng.choice(n, k, replace=False), rng.choice(n, k, replace=False)) for _ in range(20000))]
     assert abs(expected_jaccard(n, k) - np.mean(sims)) < 0.01
     assert expected_jaccard(5, 5) == 1.0
+
+
+def test_positional_attributions_rekey_the_substituted_word():
+    from analysis.primary import positional_attributions, substitution
+    original = "the film is great and the film is long"
+    variant = "the movie is great and the film is long"
+    assert substitution(original, variant) == (1, "film", "movie")
+    words = [(w, float(i)) for i, w in enumerate(variant.split())]
+    keyed = positional_attributions(original, variant, words)
+    # "movie" takes the key of the first "film"; the later "film" stays "film #2"
+    assert keyed["film"] == 1.0 and keyed["film #2"] == 6.0 and "movie" not in keyed
+    assert substitution(original, "the film is great") is None
+
+
+def test_icc1_recovers_known_intraclass_correlation():
+    from analysis.structure import icc1
+    rng = np.random.default_rng(0)
+    groups = [rng.normal(rng.normal(0, 1.0), 1.0, size=rng.integers(3, 8)) for _ in range(3000)]  # true ICC 0.5
+    r = icc1(groups)
+    assert abs(r['icc1'] - 0.5) < 0.04
+    assert abs(r['variants_for_0.8'] - 4.0) < 0.6

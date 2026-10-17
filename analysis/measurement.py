@@ -29,7 +29,7 @@ from scipy import stats
 from scipy.stats import spearmanr
 
 from analysis.report import REPO_ROOT, RUNNER_NAMES, latest_instance_dir
-from analysis.stability import load_per_instance
+from analysis.stability import load_latest_records, load_per_instance
 from analysis.strength import word_edit_fraction
 
 METRIC_LABELS = {'jaccard_at_5': 'J@5', 'spearman_correlation': 'ρ',
@@ -112,7 +112,7 @@ def make_tokenizer(experiment_key: str):
 
 
 def build(experiment_key: str) -> Dict[str, Any]:
-    records = load_per_instance(latest_instance_dir(experiment_key))
+    records = load_latest_records(experiment_key)
     tokenize = make_tokenizer(experiment_key)
     token_cache: Dict[str, List[int]] = {}
     strength_cache: Dict[Tuple[str, str], float] = {}

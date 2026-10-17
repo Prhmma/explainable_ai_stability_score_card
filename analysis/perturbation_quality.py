@@ -21,7 +21,7 @@ from typing import Any, Dict, List
 import numpy as np
 
 from analysis.report import REPO_ROOT, RUNNER_NAMES, latest_instance_dir
-from analysis.stability import METRICS, load_per_instance, stability_summary
+from analysis.stability import load_latest_records, METRICS, load_per_instance, stability_summary
 from analysis.strength import annotate_strength, make_embedder
 
 LABELS = {'jaccard_at_5': 'J@5', 'spearman_correlation': 'ρ', 'attr_diff_relative_difference_percentage': 'AD (%)'}
@@ -63,7 +63,7 @@ def _generator_profile(records: List[Dict[str, Any]], embed) -> Dict[str, Any]:
 
 
 def build(experiment_key: str) -> Dict[str, Any]:
-    main = load_per_instance(latest_instance_dir(experiment_key))
+    main = load_latest_records(experiment_key)
     v1 = load_per_instance(_v1_dir(experiment_key))
     embed = make_embedder('cpu')
     out = {'experiment': experiment_key, 'explainers': {}}

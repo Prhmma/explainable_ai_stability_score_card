@@ -17,7 +17,7 @@ import time
 import numpy as np
 
 from analysis.report import REPO_ROOT, RUNNER_NAMES, latest_instance_dir
-from analysis.stability import load_per_instance
+from analysis.stability import load_latest_records, load_per_instance
 
 
 def build(experiment_key: str, device: str, n: int):
@@ -26,7 +26,7 @@ def build(experiment_key: str, device: str, n: int):
     from stability_framework.explainers import create_explainer
     from stability_framework.model_loader import EXPERIMENT_MODELS, ModelLoader
 
-    records = load_per_instance(latest_instance_dir(experiment_key))
+    records = load_latest_records(experiment_key)
     texts = [r['original_text'] for r in records[('LIME', 'PreprocessingVariation')][:n + 1]]
     model, tokenizer = ModelLoader(device=device).load_model_and_tokenizer(EXPERIMENT_MODELS[experiment_key]['name'])
     out = {'experiment': experiment_key, 'device': device, 'n': n,
